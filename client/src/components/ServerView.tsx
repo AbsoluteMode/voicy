@@ -378,8 +378,12 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       if (!moving) return;
-      // The drop is not a click on the row (our own row opens a menu).
-      window.addEventListener("click", (c) => c.stopPropagation(), { capture: true, once: true });
+      // The drop is not a click on the row (our own row opens a menu). The
+      // click, if any, comes right after this pointerup; when there is none
+      // (the row moved to another room), the trap must not eat a later one.
+      const eat = (c: MouseEvent) => c.stopPropagation();
+      window.addEventListener("click", eat, { capture: true, once: true });
+      setTimeout(() => window.removeEventListener("click", eat, { capture: true }));
       setTimeout(() => setDrag(null));
       const to = roomAt(ev.clientX, ev.clientY);
       if (to && to !== g.from) void moveTo(g.id, to);
