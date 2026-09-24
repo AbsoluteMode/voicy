@@ -72,8 +72,10 @@ chown 10001 "$DIR/data"
 # changed on upgrade.
 OVERRIDE_NAME=${VOICY_SERVER_NAME:-}
 OVERRIDE_IMAGE=${VOICY_IMAGE:-}
+OVERRIDE_CODE=${VOICY_BOOTSTRAP_CODE:-}
 if [ -f "$DIR/.env" ]; then
   set -a; . "$DIR/.env"; set +a
+  VOICY_BOOTSTRAP_CODE=${OVERRIDE_CODE:-${VOICY_BOOTSTRAP_CODE:-}}
   FRESH=0
 else
   FRESH=1
@@ -208,6 +210,11 @@ fi
 log "starting containers"
 # A locally built voicy image is not in any registry; that is fine.
 compose pull --quiet --ignore-pull-failures 2>/dev/null || true
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  log "no prebuilt voicy-server image, building it from source (a few minutes)"
+  command -v git >/dev/null || apt-get install -y -qq git >/dev/null
+  docker build -q -t "$IMAGE" "https://github.com/AbsoluteMode/voicy.git#main:server" >/dev/null
+fi
 compose up -d --remove-orphans
 
 log "waiting for https://$PUBLIC_HOST (the first certificate can take a minute)"

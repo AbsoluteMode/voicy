@@ -1,0 +1,307 @@
+import {
+  Headphones,
+  HeadphoneOff,
+  LogOut,
+  Mic,
+  MicOff,
+  MoreVertical,
+  PhoneOff,
+  Settings,
+  Shield,
+  ShieldOff,
+  Trash2,
+  UserMinus,
+  UserPlus,
+  Volume2,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+import { updateSettings, useSettings } from "../lib/settings";
+import { api, errorCode, errorText, forgetServer, Member, Role, SavedServer } from "../lib/tauri";
+import { EndReason, Peer, useVoice, voice } from "../lib/voice";
+import { DeleteDialog } from "./DeleteDialog";
+import { InviteDialog } from "./InviteDialog";
+import { SettingsDialog } from "./SettingsDialog";
+import { colorFor, initials, RoleBadge } from "./ui";
+
+const RANK: Record<Role, number> = { member: 0, admin: 1, owner: 2 };
+
+const END_TEXT: Record<EndReason, string> = {
+  kicked: "Тебя выгнали с сервера.",
+  deleted: "Владелец удалил этот сервер.",
+  duplicate: "Ты подключился к этому серверу с другого устройства.",
+  lost: "Связь с сервером потеряна.",
+  full: "На сервере уже максимум участников (10).",
+};
+
+function PeerTile({ peer }: { peer: Peer }) {
+  const settings = useSettings();
+  const volume = settings.volumes[peer.identity] ?? 1;
+  const setVolume = (v: number) => {
+    updateSettings({ volumes: { ...settings.volumes, [peer.identity]: v } });
+    voice.setVolume(peer.identity);
+  };
+  return (
+    <div className={`peer${peer.speaking ? " speaking" : ""}`}>
+      <div className="avatar" style={{ background: colorFor(peer.identity) }}>{initials(peer.name)}</div>
+      <div className="peer-name" title={peer.name}>{peer.name}{peer.isLocal && " (ты)"}</div>
+      <div className="peer-meta">
+        <RoleBadge role={peer.role} />
+        {peer.muted && <MicOff size={14} className="muted-ico" />}
+      </div>
+      {!peer.isLocal && (
+        <label className="row vol" style={{ alignItems: "center", gap: 6 }} title={`Громкость: ${Math.round(volume * 100)}%`}>
+          <Volume2 size={14} style={{ flex: "none", color: "var(--faint)" }} />
+          <input type="range" min={0} max={2} step={0.05} value={volume} onChange={(e) => setVolume(Number(e.target.value))} />
+        </label>
+      )}
+    </div>
+  );
+}
+
+export function ServerView({ server, onChanged, onRemoved }: { server: SavedServer; onChanged: () => void; onRemoved: () => void }) {
+  const v = useVoice();
+  const here = v.host === server.host;
+  const connected = here && v.state !== "idle";
+  const [members, setMembers] = useState<Member[]>([]);
+  const [role, setRole] = useState<Role>(server.role);
+  const [fatal, setFatal] = useState<"unauthorized" | "gone" | null>(null);
+  const [dialog, setDialog] = useState<null | "invite" | "settings" | "delete">(null);
+  const [menu, setMenu] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleError = useCallback((e: unknown) => {
+    const code = errorCode(e);
+    if (code === "unauthorized" || code === "gone") setFatal(code);
+    else setError(errorText(e));
+  }, []);
+
+  const loadMembers = useCallback(async () => {
+    try {
+      const [me, list] = await Promise.all([
+        api<Member>(server.host, "GET", "/api/me"),
+        api<Member[]>(server.host, "GET", "/api/members"),
+      ]);
+      setRole(me.role);
+      setMembers(list);
+      if (me.role !== server.role || me.nickname !== server.nickname) onChanged();
+    } catch (e) {
+      handleError(e);
+    }
+  }, [server.host, server.role, server.nickname, onChanged, handleError]);
+
+  useEffect(() => {
+    setFatal(null);
+    setError("");
+    setMembers([]);
+    setRole(server.role);
+    void loadMembers();
+  }, [server.host]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Someone new in the room may be a brand-new member.
+  const peerKey = here ? v.peers.map((p) => p.identity).sort().join() : "";
+  useEffect(() => {
+    if (peerKey) void loadMembers();
+  }, [peerKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!here || !v.endReason) return;
+    if (v.endReason === "kicked") setFatal("unauthorized");
+    if (v.endReason === "deleted") setFatal("gone");
+  }, [here, v.endReason]);
+
+  const online = useMemo(() => new Set(here ? v.peers.map((p) => p.identity) : []), [here, v.peers]);
+
+  async function join() {
+    setError("");
+    voice.clearEnd();
+    try {
+      await voice.connect(server.host);
+    } catch (e) {
+      handleError(e);
+    }
+  }
+
+  async function act(fn: () => Promise<unknown>) {
+    setError("");
+    try {
+      await fn();
+      await loadMembers();
+    } catch (e) {
+      handleError(e);
+    }
+  }
+
+  async function forget() {
+    if (here) await voice.disconnect();
+    await forgetServer(server.host);
+    onRemoved();
+  }
+
+  async function leave() {
+    setMenu(false);
+    if (!confirm(`Выйти с сервера «${server.name}»? Вернуться можно будет только по новой ссылке.`)) return;
+    try {
+      await api(server.host, "DELETE", "/api/me");
+    } catch (e) {
+      if (!["unauthorized", "gone"].includes(errorCode(e) ?? "")) return handleError(e);
+    }
+    await forget();
+  }
+
+  const canManage = (m: Member) => m.id !== server.member_id && RANK[role] > RANK[m.role] && RANK[role] >= RANK.admin;
+
+  if (fatal) {
+    return (
+      <div className="welcome">
+        <div>
+          <h1>{fatal === "gone" ? "Сервер удалён" : "Доступ закрыт"}</h1>
+          <p>
+            {fatal === "gone"
+              ? `Владелец удалил «${server.name}».`
+              : `Тебя больше нет среди участников «${server.name}». Чтобы вернуться, попроси новую ссылку.`}
+          </p>
+          <div className="actions">
+            <button className="btn primary" onClick={forget}>Убрать из списка</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="server">
+      <header className="server-head">
+        <div>
+          <h2>{server.name}</h2>
+          <div className="host selectable">{server.host}</div>
+        </div>
+        <RoleBadge role={role} />
+        <div className="spacer" />
+        {RANK[role] >= RANK.admin && (
+          <button className="btn primary" onClick={() => setDialog("invite")}>
+            <UserPlus size={16} /> Пригласить
+          </button>
+        )}
+        <div className="menu">
+          <button className="icon-btn" onClick={() => setMenu(!menu)} aria-label="Меню сервера">
+            <MoreVertical size={18} />
+          </button>
+          {menu && (
+            <div className="menu-pop" onMouseLeave={() => setMenu(false)}>
+              {role !== "owner" && (
+                <button onClick={leave}><LogOut size={16} /> Выйти с сервера</button>
+              )}
+              {role === "owner" && (
+                <button className="danger" onClick={() => { setMenu(false); setDialog("delete"); }}>
+                  <Trash2 size={16} /> Удалить сервер
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </header>
+
+      <section className="stage">
+        {here && v.endReason && !connected && <div className="notice">{END_TEXT[v.endReason]}</div>}
+        {error && <div className="error" style={{ marginTop: 0, marginBottom: 16 }}>{error}</div>}
+        {connected ? (
+          <>
+            {v.audioBlocked && (
+              <div className="notice">
+                Звук заблокирован. <button className="btn" onClick={() => voice.startAudio()}>Включить звук</button>
+              </div>
+            )}
+            <div className="peers">
+              {v.peers.map((p) => <PeerTile key={p.identity} peer={p} />)}
+            </div>
+          </>
+        ) : (
+          <div className="stage-empty">
+            <div className="big">Голосовой канал</div>
+            <div className="hint">
+              {members.length > 0 ? `Участников на сервере: ${members.length}` : "Заходи и зови друзей"}
+            </div>
+            <button className="btn green big" onClick={join} disabled={here && v.state === "connecting"}>
+              <Mic size={18} /> Подключиться
+            </button>
+          </div>
+        )}
+      </section>
+
+      <aside className="members">
+        <h3>В канале: {online.size}</h3>
+        {members.filter((m) => online.has(m.id)).map((m) => memberRow(m, true))}
+        <h3 style={{ marginTop: 18 }}>Участники: {members.length}</h3>
+        {members.filter((m) => !online.has(m.id)).map((m) => memberRow(m, false))}
+      </aside>
+
+      <footer className="controls">
+        <div className="status">
+          {connected ? (
+            <>
+              <span className={`pulse${v.state === "connected" ? "" : " warn"}`} />
+              {v.state === "connected" ? "Голос подключён" : v.state === "connecting" ? "Подключаюсь…" : "Переподключаюсь…"}
+            </>
+          ) : (
+            <span>Не в голосе · {server.nickname}</span>
+          )}
+        </div>
+        <button className={`icon-btn${v.micMuted ? " off" : ""}`} onClick={() => voice.setMicMuted(!v.micMuted)} title={v.micMuted ? "Включить микрофон" : "Выключить микрофон"}>
+          {v.micMuted ? <MicOff size={18} /> : <Mic size={18} />}
+        </button>
+        <button className={`icon-btn${v.deafened ? " off" : ""}`} onClick={() => voice.setDeafened(!v.deafened)} title={v.deafened ? "Включить звук" : "Выключить звук"}>
+          {v.deafened ? <HeadphoneOff size={18} /> : <Headphones size={18} />}
+        </button>
+        <button className="icon-btn" onClick={() => setDialog("settings")} title="Настройки звука">
+          <Settings size={18} />
+        </button>
+        {connected && (
+          <button className="icon-btn hang" onClick={() => voice.disconnect()} title="Отключиться">
+            <PhoneOff size={18} />
+          </button>
+        )}
+      </footer>
+
+      {dialog === "invite" && <InviteDialog host={server.host} onClose={() => setDialog(null)} />}
+      {dialog === "settings" && <SettingsDialog onClose={() => setDialog(null)} />}
+      {dialog === "delete" && <DeleteDialog server={server} onClose={() => setDialog(null)} onDeleted={forget} />}
+    </div>
+  );
+
+  function memberRow(m: Member, online: boolean) {
+    return (
+      <div className="member" key={m.id}>
+        <div className="mini" style={{ background: colorFor(m.id) }}>
+          {initials(m.nickname)}
+          {online && <span className="dot" />}
+        </div>
+        <div className="who">
+          <div>{m.nickname}{m.id === server.member_id && " (ты)"}</div>
+        </div>
+        <RoleBadge role={m.role} />
+        {canManage(m) && (
+          <div className="acts">
+            {role === "owner" &&
+              (m.role === "admin" ? (
+                <button className="icon-btn sm" title="Снять админа" onClick={() => act(() => api(server.host, "POST", `/api/members/${m.id}/role`, { role: "member" }))}>
+                  <ShieldOff size={15} />
+                </button>
+              ) : (
+                <button className="icon-btn sm" title="Сделать админом" onClick={() => act(() => api(server.host, "POST", `/api/members/${m.id}/role`, { role: "admin" }))}>
+                  <Shield size={15} />
+                </button>
+              ))}
+            <button
+              className="icon-btn sm"
+              title="Выгнать"
+              onClick={() => confirm(`Выгнать ${m.nickname}? Вернуться можно будет только по новой ссылке.`) && act(() => api(server.host, "POST", `/api/members/${m.id}/kick`))}
+            >
+              <UserMinus size={15} />
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+}
