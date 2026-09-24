@@ -28,7 +28,20 @@ export interface Peer {
   isLocal: boolean;
   speaking: boolean;
   muted: boolean;
+  /** How their audio actually arrives here, for remote peers. */
+  net?: PeerNet;
 }
+
+export interface PeerNet {
+  lossPct: number;
+  jitterMs: number;
+  /** Share of played audio the receiver had to invent or time-stretch:
+   *  what "chewed" or robotic speech is made of. */
+  repairPct: number;
+}
+
+/** Above either, the peer's connection is audibly unstable. */
+export const NET_BAD = { lossPct: 2, repairPct: 3 };
 
 export interface VoiceSnapshot {
   host: string | null;
@@ -138,6 +151,7 @@ class VoiceSession {
       isLocal: p === room.localParticipant,
       speaking: this.speaking.has(p.identity),
       muted: !p.isMicrophoneEnabled,
+      net: this.peerNet.get(p.identity),
     }));
     peers.sort((a, b) => Number(b.isLocal) - Number(a.isLocal) || a.name.localeCompare(b.name));
     this.set({ peers, audioBlocked: !room.canPlaybackAudio });
@@ -322,10 +336,46 @@ class VoiceSession {
   private startStats() {
     clearInterval(this.statsTimer);
     this.lastSent = null;
+    this.peerNet.clear();
+    this.lastRecv.clear();
     this.statsTimer = setInterval(() => void this.sampleStats(), 1000);
   }
 
+  private peerNet = new Map<string, PeerNet>();
+  private lastRecv = new Map<string, { lost: number; got: number; samples: number; repaired: number }>();
+
+  /** Receive-side quality per remote peer, from WebRTC inbound stats. */
+  private async sampleReceivers() {
+    const room = this.room;
+    if (!room) return;
+    for (const p of room.remoteParticipants.values()) {
+      const receiver = p.getTrackPublication(Track.Source.Microphone)?.track?.receiver;
+      if (!receiver) continue;
+      (await receiver.getStats()).forEach((r) => {
+        if (r.type !== "inbound-rtp" || r.kind !== "audio") return;
+        const now = {
+          lost: r.packetsLost ?? 0,
+          got: r.packetsReceived ?? 0,
+          samples: r.totalSamplesReceived ?? 0,
+          repaired: (r.concealedSamples ?? 0) + (r.insertedSamplesForDeceleration ?? 0) + (r.removedSamplesForAcceleration ?? 0),
+        };
+        const prev = this.lastRecv.get(p.identity);
+        this.lastRecv.set(p.identity, now);
+        if (!prev) return;
+        const packets = now.got - prev.got + (now.lost - prev.lost);
+        const samples = now.samples - prev.samples;
+        this.peerNet.set(p.identity, {
+          lossPct: packets > 0 ? Math.round(((now.lost - prev.lost) / packets) * 1000) / 10 : 0,
+          jitterMs: Math.round((r.jitter ?? 0) * 1000),
+          repairPct: samples > 0 ? Math.round(((now.repaired - prev.repaired) / samples) * 1000) / 10 : 0,
+        });
+      });
+    }
+    this.refresh();
+  }
+
   private async sampleStats() {
+    void this.sampleReceivers().catch(() => {});
     const sender = this.micTrack()?.sender;
     if (!sender) return this.set({ stats: undefined });
     const stats: AudioStats = {};

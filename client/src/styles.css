@@ -101,6 +101,7 @@ button { font: inherit; color: inherit; }
 .peer-meta { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; min-height: 18px; }
 .peer .vol { width: 100%; }
 .peer .muted-ico { color: var(--danger); }
+.peer-net { font-size: 11px; text-align: center; line-height: 1.35; }
 
 .members { border-left: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 16px 12px; grid-row: 2 / 4; grid-column: 2; }
 .members h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin: 4px 8px 10px; }

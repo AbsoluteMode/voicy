@@ -20,7 +20,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { updateSettings, useSettings } from "../lib/settings";
 import { api, errorCode, errorText, forgetServer, Member, Role, SavedServer } from "../lib/tauri";
-import { AudioStats, EndReason, Peer, useVoice, voice } from "../lib/voice";
+import { AudioStats, EndReason, NET_BAD, Peer, PeerNet, useVoice, voice } from "../lib/voice";
 import { DeleteDialog } from "./DeleteDialog";
 import { InviteDialog } from "./InviteDialog";
 import { SettingsDialog } from "./SettingsDialog";
@@ -55,6 +55,20 @@ function StatsLine({ s }: { s: AudioStats }) {
   );
 }
 
+/** How a friend's audio reaches you; warns when it is audibly unstable. */
+function NetLine({ net }: { net: PeerNet }) {
+  const bad = net.lossPct > NET_BAD.lossPct || net.repairPct > NET_BAD.repairPct;
+  return (
+    <div
+      className="peer-net"
+      style={{ color: bad ? "var(--warn)" : "var(--faint)" }}
+      title="Как звук этого человека доходит до тебя. «Рывки» — доля звука, которую пришлось восстановить или растянуть из-за потерь и неровной доставки: это и слышно как «жёваный» голос."
+    >
+      {bad ? "⚠ нестабильная связь · " : ""}потери {net.lossPct}% · рывки {net.repairPct}% · джиттер {net.jitterMs} мс
+    </div>
+  );
+}
+
 function PeerTile({ peer }: { peer: Peer }) {
   const settings = useSettings();
   const volume = settings.volumes[peer.identity] ?? 1;
@@ -70,6 +84,7 @@ function PeerTile({ peer }: { peer: Peer }) {
         <RoleBadge role={peer.role} />
         {peer.muted && <MicOff size={14} className="muted-ico" />}
       </div>
+      {peer.net && <NetLine net={peer.net} />}
       {!peer.isLocal && (
         <label className="row vol" style={{ alignItems: "center", gap: 6 }} title={`Громкость: ${Math.round(volume * 100)}%`}>
           <Volume2 size={14} style={{ flex: "none", color: "var(--faint)" }} />
