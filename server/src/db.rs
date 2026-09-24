@@ -47,6 +47,8 @@ pub struct Member {
     #[serde(skip)]
     pub secret_hash: String,
     pub created_at: i64,
+    /// Version of the member's picture, for `/api/avatars/{id}?v=<version>`.
+    pub avatar: Option<String>,
 }
 
 impl Member {
@@ -59,8 +61,17 @@ impl Member {
                 .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into()))?,
             secret_hash: r.get("secret_hash")?,
             created_at: r.get("created_at")?,
+            avatar: r.get("avatar")?,
         })
     }
+}
+
+/// Members joined with their avatar version, the shape `Member::from_row` reads.
+const MEMBER_SELECT: &str = "SELECT m.*, a.version AS avatar FROM members m LEFT JOIN avatars a ON a.member_id = m.id";
+
+pub struct Avatar {
+    pub mime: String,
+    pub data: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -102,6 +113,12 @@ CREATE TABLE IF NOT EXISTS invites (
     expires_at INTEGER,
     used_by    TEXT,
     used_at    INTEGER
+);
+CREATE TABLE IF NOT EXISTS avatars (
+    member_id TEXT PRIMARY KEY REFERENCES members(id) ON DELETE CASCADE,
+    version   TEXT NOT NULL,
+    mime      TEXT NOT NULL,
+    data      BLOB NOT NULL
 );
 ";
 
@@ -183,6 +200,7 @@ impl Db {
             role,
             secret_hash: secret_hash.to_owned(),
             created_at: now,
+            avatar: None,
         };
         tx.execute(
             "INSERT INTO members (id, nickname, role, secret_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -199,13 +217,13 @@ impl Db {
     pub fn member(&self, id: &str) -> Result<Option<Member>> {
         Ok(self
             .conn()
-            .query_row("SELECT * FROM members WHERE id = ?1", [id], Member::from_row)
+            .query_row(&format!("{MEMBER_SELECT} WHERE m.id = ?1"), [id], Member::from_row)
             .optional()?)
     }
 
     pub fn members(&self) -> Result<Vec<Member>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT * FROM members ORDER BY created_at")?;
+        let mut stmt = conn.prepare(&format!("{MEMBER_SELECT} ORDER BY m.created_at"))?;
         let rows = stmt.query_map([], Member::from_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -220,6 +238,28 @@ impl Db {
         self.conn()
             .execute("UPDATE members SET role = ?1 WHERE id = ?2", params![role.as_str(), id])?;
         Ok(())
+    }
+
+    pub fn set_avatar(&self, id: &str, version: &str, mime: &str, data: &[u8]) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR REPLACE INTO avatars (member_id, version, mime, data) VALUES (?1, ?2, ?3, ?4)",
+            params![id, version, mime, data],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_avatar(&self, id: &str) -> Result<()> {
+        self.conn().execute("DELETE FROM avatars WHERE member_id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn avatar(&self, id: &str) -> Result<Option<Avatar>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT mime, data FROM avatars WHERE member_id = ?1", [id], |r| {
+                Ok(Avatar { mime: r.get(0)?, data: r.get(1)? })
+            })
+            .optional()?)
     }
 
     pub fn delete_member(&self, id: &str) -> Result<()> {
@@ -276,7 +316,8 @@ impl Db {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute_batch(
-            "DELETE FROM members;
+            "DELETE FROM avatars;
+             DELETE FROM members;
              DELETE FROM invites;
              INSERT OR REPLACE INTO meta (key, value) VALUES ('deleted', '1');",
         )?;
@@ -327,5 +368,19 @@ mod tests {
         assert!(db.is_deleted().unwrap());
         assert!(db.members().unwrap().is_empty());
         assert!(!db.ensure_owner_invite("code2", 2).unwrap());
+    }
+
+    #[test]
+    fn avatars_follow_their_member() {
+        let db = db();
+        db.ensure_owner_invite("code", 0).unwrap();
+        let Redeem::Ok(m) = db.redeem_invite("code", "izzy", "s", 1).unwrap() else { panic!() };
+        assert_eq!(db.member(&m.id).unwrap().unwrap().avatar, None);
+        db.set_avatar(&m.id, "v1", "image/webp", b"a").unwrap();
+        db.set_avatar(&m.id, "v2", "image/png", b"b").unwrap();
+        assert_eq!(db.members().unwrap()[0].avatar.as_deref(), Some("v2"));
+        assert_eq!(db.avatar(&m.id).unwrap().unwrap().mime, "image/png");
+        db.delete_member(&m.id).unwrap();
+        assert!(db.avatar(&m.id).unwrap().is_none());
     }
 }

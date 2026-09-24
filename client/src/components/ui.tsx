@@ -1,9 +1,9 @@
 import { Crown, Headphones, ShieldCheck } from "lucide-react";
-import { ReactNode, useEffect } from "react";
+import { ReactNode, useEffect, useState } from "react";
 
 import { Role } from "../lib/tauri";
 
-export function Modal({ title, sub, onClose, children }: { title: string; sub?: ReactNode; onClose?: () => void; children: ReactNode }) {
+export function Modal({ title, sub, onClose, wide, children }: { title: string; sub?: ReactNode; onClose?: () => void; wide?: boolean; children: ReactNode }) {
   useEffect(() => {
     if (!onClose) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -12,7 +12,7 @@ export function Modal({ title, sub, onClose, children }: { title: string; sub?: 
   }, [onClose]);
   return (
     <div className="backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose?.()}>
-      <div className="modal" role="dialog" aria-label={title}>
+      <div className={`modal${wide ? " wide" : ""}`} role="dialog" aria-label={title}>
         <h2>{title}</h2>
         {sub && <p className="sub">{sub}</p>}
         {children}
@@ -71,5 +71,17 @@ export function RoleBadge({ role, size = 15 }: { role?: Role; size?: number }) {
     <span className="role-icon" title={title} aria-label={title} style={{ color }}>
       <Icon size={size} strokeWidth={2.2} />
     </span>
+  );
+}
+
+/** A member's picture, or their initials on a color of their own (grey when `plain`). */
+export function Avatar(props: { id: string; name: string; src?: string | null; className: string; plain?: boolean; children?: ReactNode }) {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => setBroken(false), [props.src]);
+  return (
+    <div className={props.className} style={props.plain ? undefined : { background: colorFor(props.id) }}>
+      {props.src && !broken ? <img src={props.src} alt="" draggable={false} onError={() => setBroken(true)} /> : initials(props.name)}
+      {props.children}
+    </div>
   );
 }

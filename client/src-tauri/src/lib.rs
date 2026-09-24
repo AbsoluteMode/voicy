@@ -3,6 +3,7 @@ mod deploy;
 mod error;
 mod hotkeys;
 mod permissions;
+mod pinterest;
 mod store;
 
 use rand::RngCore;
@@ -92,6 +93,29 @@ fn save_recording(name: String, wav: Vec<u8>, stats: String) -> CmdResult<String
 #[tauri::command]
 fn set_hotkeys(hk: tauri::State<hotkeys::Hotkeys>, bindings: std::collections::HashMap<String, Option<String>>) -> Vec<String> {
     hk.set(bindings)
+}
+
+/// One page of Pinterest pins for the avatar picker.
+#[tauri::command]
+async fn pinterest_search(query: String, bookmark: Option<String>) -> CmdResult<pinterest::Page> {
+    let query = query.trim();
+    if query.is_empty() || query.chars().count() > 100 {
+        return Err(CmdError::new("invalid", "напиши, что искать"));
+    }
+    pinterest::search(query, bookmark.as_deref()).await.map_err(|e| {
+        eprintln!("pinterest search: {e:#}");
+        CmdError::new("network", "Pinterest не ответил, попробуй ещё раз")
+    })
+}
+
+/// A pin's picture as raw bytes (an ArrayBuffer in the page).
+#[tauri::command]
+async fn pinterest_image(url: String) -> CmdResult<tauri::ipc::Response> {
+    let bytes = pinterest::image(&url).await.map_err(|e| {
+        eprintln!("pinterest image: {e:#}");
+        CmdError::new("network", "не удалось скачать картинку")
+    })?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]
@@ -283,6 +307,8 @@ pub fn run() {
             os_username,
             save_recording,
             set_hotkeys,
+            pinterest_search,
+            pinterest_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

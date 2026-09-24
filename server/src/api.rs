@@ -2,15 +2,18 @@ use std::collections::BTreeMap;
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
-    routing::{delete, get, post},
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{delete, get, post, put},
     Json, Router,
 };
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
     auth::{hash, random_secret, AuthMember},
+    avatar,
     db::{now, Invite, Member, Redeem, Role},
     error::{ApiError, ApiResult},
     livekit::ECHO_SUFFIX,
@@ -26,6 +29,8 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/info", get(info))
         .route("/api/join", post(join))
         .route("/api/me", get(me).patch(update_me).delete(leave))
+        .route("/api/me/avatar", put(set_avatar).delete(clear_avatar))
+        .route("/api/avatars/{id}", get(avatar))
         .route("/api/token", post(token))
         .route("/api/rooms", get(rooms))
         .route("/api/members", get(members))
@@ -105,6 +110,51 @@ async fn update_me(
     m.nickname = clean_nickname(&req.nickname)?;
     s.db.set_nickname(&m.id, &m.nickname)?;
     Ok(Json(m))
+}
+
+#[derive(Deserialize)]
+struct AvatarReq {
+    /// The image file, base64.
+    data: String,
+}
+
+async fn set_avatar(
+    State(s): State<SharedState>,
+    AuthMember(mut m): AuthMember,
+    Json(req): Json<AvatarReq>,
+) -> ApiResult<Json<Member>> {
+    let data = STANDARD
+        .decode(req.data.trim())
+        .map_err(|_| ApiError::BadRequest("avatar must be base64"))?;
+    if data.len() > avatar::MAX_BYTES {
+        return Err(ApiError::BadRequest("avatar is too large"));
+    }
+    let mime = avatar::sniff(&data).ok_or(ApiError::BadRequest("avatar must be a PNG, JPEG, WebP or GIF image"))?;
+    let version = avatar::version(&data);
+    s.db.set_avatar(&m.id, &version, mime, &data)?;
+    m.avatar = Some(version);
+    Ok(Json(m))
+}
+
+async fn clear_avatar(State(s): State<SharedState>, AuthMember(mut m): AuthMember) -> ApiResult<Json<Member>> {
+    s.db.clear_avatar(&m.id)?;
+    m.avatar = None;
+    Ok(Json(m))
+}
+
+/// Public, so the app can show it with a plain `<img>`: member ids are
+/// random and only other members see them. Versioned URLs never change.
+async fn avatar(State(s): State<SharedState>, Path(id): Path<String>) -> ApiResult<Response> {
+    if s.db.is_deleted()? {
+        return Err(ApiError::Gone);
+    }
+    let a = s.db.avatar(&id)?.ok_or(ApiError::NotFound)?;
+    let headers = [
+        (header::CONTENT_TYPE, a.mime),
+        (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_owned()),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+    ];
+    Ok((headers, a.data).into_response())
 }
 
 async fn leave(State(s): State<SharedState>, AuthMember(m): AuthMember) -> ApiResult<StatusCode> {

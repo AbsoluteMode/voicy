@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 
+import type { LocalAvatar } from "./avatar";
 import type { NoiseMode } from "./noise";
 
 export interface AudioSettings {
@@ -13,6 +14,12 @@ export interface AudioSettings {
   /** Per-member playback volume, 0..2, keyed by member id. */
   volumes: Record<string, number>;
   nickname: string;
+  /**
+   * Our picture, pushed to every server we are on. `undefined` until one is
+   * chosen on this device, so servers keep what another device set; `null`
+   * removes it everywhere.
+   */
+  avatar?: LocalAvatar | null;
   /** Global shortcuts in accelerator form ("Ctrl+Shift+KeyM"); null = unset. */
   hotkeys: Hotkeys;
   /** Push-to-talk mode: the mic is live only while the ptt key is held. */
