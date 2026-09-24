@@ -1,6 +1,7 @@
 mod api;
 mod deploy;
 mod error;
+mod hotkeys;
 mod permissions;
 mod store;
 
@@ -85,6 +86,12 @@ fn save_recording(name: String, wav: Vec<u8>, stats: String) -> CmdResult<String
     std::fs::write(&wav_path, wav).map_err(|e| CmdError::new("other", e.to_string()))?;
     std::fs::write(base.with_extension("json"), stats).map_err(|e| CmdError::new("other", e.to_string()))?;
     Ok(wav_path.to_string_lossy().into_owned())
+}
+
+/// Replaces the global hotkey bindings; returns actions that did not parse.
+#[tauri::command]
+fn set_hotkeys(hk: tauri::State<hotkeys::Hotkeys>, bindings: std::collections::HashMap<String, Option<String>>) -> Vec<String> {
+    hk.set(bindings)
 }
 
 #[tauri::command]
@@ -245,7 +252,6 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
@@ -256,6 +262,9 @@ pub fn run() {
                 // Installed builds register the scheme in the installer.
                 let _ = app.deep_link().register_all();
             }
+            let hk = hotkeys::Hotkeys::default();
+            hk.start(app.handle().clone());
+            app.manage(hk);
             if let Some(window) = app.get_webview_window("main") {
                 permissions::allow_microphone(&window);
             }
@@ -273,6 +282,7 @@ pub fn run() {
             invite_info,
             os_username,
             save_recording,
+            set_hotkeys,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

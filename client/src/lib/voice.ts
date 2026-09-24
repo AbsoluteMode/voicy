@@ -227,8 +227,8 @@ class VoiceSession {
     const gen = ++this.generation;
     const stale = () => gen !== this.generation;
     this.teardown();
-    // With push-to-talk set up, the mic starts closed.
-    if (getSettings().hotkeys.ptt) this.micWanted = false;
+    // In push-to-talk mode the mic starts closed.
+    if (getSettings().pushToTalk) this.micWanted = false;
     this.set({ ...IDLE, host, room: roomId, state: "connecting", micMuted: !this.micWanted });
 
     try {
@@ -393,6 +393,8 @@ class VoiceSession {
   private startStats() {
     clearInterval(this.statsTimer);
     this.lastSent = null;
+    this.sendLow = false;
+    this.lossy = this.clean = 0;
     this.peerNet.clear();
     this.lastRecv.clear();
     this.statsTimer = setInterval(() => void this.sampleStats(), 1000);
@@ -508,6 +510,33 @@ class VoiceSession {
       }
     });
     this.set({ stats });
+    void this.adaptSendBitrate(sender, stats.lossPct ?? 0);
+  }
+
+  private sendLow = false;
+  private lossy = 0;
+  private clean = 0;
+
+  /**
+   * On a lossy uplink (weak Wi-Fi, a busy line) halve the Opus bitrate so
+   * fewer packets are lost; RED stays on. Back to full quality after 20 s
+   * of a clean line. Changes the live sender, no republish.
+   */
+  private async adaptSendBitrate(sender: RTCRtpSender, lossPct: number) {
+    if (lossPct > 3) {
+      this.lossy++;
+      this.clean = 0;
+    } else if (lossPct < 0.5) {
+      this.clean++;
+      this.lossy = 0;
+    }
+    const low = this.sendLow ? this.clean < 20 : this.lossy >= 3;
+    if (low === this.sendLow) return;
+    this.sendLow = low;
+    const params = sender.getParameters();
+    if (!params.encodings?.length) return;
+    params.encodings[0].maxBitrate = (low ? 64 : getSettings().bitrate) * 1000;
+    await sender.setParameters(params).catch((e) => console.warn("bitrate change failed", e));
   }
 
   private echoRoom: Room | null = null;
@@ -659,6 +688,12 @@ class VoiceSession {
     await this.setDeafened(deafened);
   }
 
+  /** Switching push-to-talk on closes the mic; switching it off reopens it. */
+  async setPushToTalkMode(on: boolean) {
+    clearTimeout(this.pttRelease);
+    await this.setMicMuted(on);
+  }
+
   private pttRelease: ReturnType<typeof setTimeout> | undefined;
 
   /**
@@ -667,7 +702,7 @@ class VoiceSession {
    */
   async pushToTalk(held: boolean) {
     clearTimeout(this.pttRelease);
-    if (!this.room) return;
+    if (!this.room || !getSettings().pushToTalk) return;
     if (held) {
       if (this.snap.micMuted) await this.setMicMuted(false);
     } else {
