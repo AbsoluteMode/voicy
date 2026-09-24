@@ -23,6 +23,10 @@ forwards packets untouched (SFU, no mixing or transcoding). Noise suppression, e
 off by default, because they are built for laptop speakers and hurt the sound on headphones. Each one can be
 turned on.
 
+## Screen sharing
+
+Connected members can share a display or an application window at 720p, 1080p, 1440p (2K), or 2160p (4K), targeting 30 fps. The Windows source picker makes the final selection. Optional screen audio is published when WebView2 provides an audio track for the selected source; the client shows a notice if it starts video without audio.
+
 ## Layout
 
 ```

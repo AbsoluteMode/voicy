@@ -3,9 +3,11 @@ import {
   AudioCaptureOptions,
   DisconnectReason,
   LocalAudioTrack,
+  LocalVideoTrack,
   Participant,
   RemoteParticipant,
   RemoteTrack,
+  RemoteVideoTrack,
   Room,
   RoomEvent,
   Track,
@@ -13,6 +15,7 @@ import {
 } from "livekit-client";
 
 import { DFN_MAX_REALTIME_FACTOR, dfnRealtimeFactor, VoicyNoiseProcessor } from "./noise";
+import { ScreenQuality, ScreenSource, screenOptions } from "./screen";
 import { getSettings } from "./settings";
 import { api, Role, saveRecording } from "./tauri";
 
@@ -45,12 +48,21 @@ export interface PeerNet {
 /** Above either, the peer's connection is audibly unstable. */
 export const NET_BAD = { lossPct: 2, repairPct: 3 };
 
+export interface ScreenShare {
+  identity: string;
+  name: string;
+  isLocal: boolean;
+  track: LocalVideoTrack | RemoteVideoTrack;
+}
+
 export interface VoiceSnapshot {
   host: string | null;
   /** Voice room id (r1, r2, ...) on that host. */
   room: string | null;
   state: ConnState;
   peers: Peer[];
+  screens: ScreenShare[];
+  screenSharing: boolean;
   micMuted: boolean;
   deafened: boolean;
   /** WebView blocked autoplay; a click must call `startAudio`. */
@@ -80,6 +92,8 @@ const IDLE: VoiceSnapshot = {
   room: null,
   state: "idle",
   peers: [],
+  screens: [],
+  screenSharing: false,
   micMuted: false,
   deafened: false,
   audioBlocked: false,
@@ -209,7 +223,24 @@ class VoiceSession {
       net: this.peerNet.get(p.identity),
     }));
     peers.sort((a, b) => Number(b.isLocal) - Number(a.isLocal) || a.name.localeCompare(b.name));
-    this.set({ peers, audioBlocked: !room.canPlaybackAudio });
+    const screens: ScreenShare[] = [];
+    for (const p of all) {
+      const track = p.getTrackPublication(Track.Source.ScreenShare)?.track;
+      if (track && track.kind === Track.Kind.Video) {
+        screens.push({
+          identity: p.identity,
+          name: p.name || p.identity,
+          isLocal: p === room.localParticipant,
+          track: track as LocalVideoTrack | RemoteVideoTrack,
+        });
+      }
+    }
+    this.set({
+      peers,
+      screens,
+      screenSharing: room.localParticipant.isScreenShareEnabled,
+      audioBlocked: !room.canPlaybackAudio,
+    });
   };
 
   private applyVolume(p: RemoteParticipant) {
@@ -261,6 +292,9 @@ class VoiceSession {
         .on(RoomEvent.TrackMuted, this.refresh)
         .on(RoomEvent.TrackUnmuted, this.refresh)
         .on(RoomEvent.LocalTrackPublished, this.refresh)
+        .on(RoomEvent.LocalTrackUnpublished, this.refresh)
+        .on(RoomEvent.TrackPublished, this.refresh)
+        .on(RoomEvent.TrackUnpublished, this.refresh)
         .on(RoomEvent.ParticipantNameChanged, this.refresh)
         .on(RoomEvent.ParticipantMetadataChanged, this.refresh)
         .on(RoomEvent.AudioPlaybackStatusChanged, this.refresh)
@@ -572,6 +606,19 @@ class VoiceSession {
     const { host, room } = this.snap;
     this.teardown();
     this.set({ ...IDLE, host, room });
+  }
+
+  async setScreenShare(enabled: boolean, quality: ScreenQuality = "1080p", source: ScreenSource = "monitor", audio = false) {
+    const room = this.room;
+    if (!room || this.snap.state !== "connected") return;
+    if (enabled && !navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error("Захват экрана недоступен в этой версии WebView2.");
+    }
+    const { capture, publish } = screenOptions(quality, source, audio);
+    await room.localParticipant.setScreenShareEnabled(enabled, enabled ? capture : undefined, enabled ? publish : undefined);
+    if (this.room !== room) return;
+    this.refresh();
+    return !!room.localParticipant.getTrackPublication(Track.Source.ScreenShareAudio)?.track;
   }
 
   async setMicMuted(muted: boolean) {

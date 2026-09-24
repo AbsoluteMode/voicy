@@ -75,7 +75,7 @@ impl LiveKit {
         Ok(encode(&Header::default(), &claims, &EncodingKey::from_secret(self.secret.as_bytes()))?)
     }
 
-    /// Token that lets a member join `room` and speak. It only needs to live
+    /// Token that lets a member join `room`, speak, and share their screen. It only needs to live
     /// long enough to connect: LiveKit refreshes tokens for live sessions.
     pub fn join_token(&self, room: &str, identity: &str, name: &str, metadata: String) -> Result<String> {
         self.sign(
@@ -88,7 +88,7 @@ impl LiveKit {
                 room_join: true,
                 can_publish: true,
                 can_subscribe: true,
-                can_publish_sources: vec!["microphone"],
+                can_publish_sources: vec!["microphone", "screen_share", "screen_share_audio"],
                 ..Default::default()
             },
         )
@@ -214,12 +214,22 @@ impl LiveKit {
 #[cfg(test)]
 mod tests {
     use super::LiveKit;
+    use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+    use serde_json::json;
 
     #[test]
     fn join_tokens_verify_only_with_our_secret() {
         let lk = LiveKit::new("http://127.0.0.1:7880", "key", "secret");
         let token = lk.join_token("main", "member-1", "izzy", "{}".into()).unwrap();
         assert_eq!(lk.verify_identity(&token).as_deref(), Some("member-1"));
+        let claims = decode::<serde_json::Value>(
+            &token,
+            &DecodingKey::from_secret(b"secret"),
+            &Validation::new(Algorithm::HS256),
+        )
+        .unwrap()
+        .claims;
+        assert_eq!(claims["video"]["canPublishSources"], json!(["microphone", "screen_share", "screen_share_audio"]));
         let other = LiveKit::new("http://127.0.0.1:7880", "key", "other-secret");
         assert_eq!(other.verify_identity(&token), None);
         assert_eq!(lk.verify_identity("garbage"), None);

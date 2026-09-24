@@ -4,8 +4,10 @@ import {
   Headphones,
   HeadphoneOff,
   LogOut,
+  Maximize2,
   Mic,
   MicOff,
+  MonitorUp,
   MoreVertical,
   Pencil,
   PhoneOff,
@@ -16,12 +18,14 @@ import {
   UserMinus,
   UserPlus,
   Volume2,
+  X,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { SCREEN_QUALITIES, ScreenQuality, ScreenSource } from "../lib/screen";
 import { updateSettings, useSettings } from "../lib/settings";
 import { api, errorCode, errorText, forgetServer, Member, Role, RoomInfo, SavedServer } from "../lib/tauri";
-import { AudioStats, EndReason, NET_BAD, Peer, PeerNet, useVoice, voice } from "../lib/voice";
+import { AudioStats, EndReason, NET_BAD, Peer, PeerNet, ScreenShare, useVoice, voice } from "../lib/voice";
 import { DeleteDialog } from "./DeleteDialog";
 import { InviteDialog } from "./InviteDialog";
 import { SettingsDialog } from "./SettingsDialog";
@@ -128,6 +132,27 @@ function RecordButton({ identity }: { identity: string }) {
   );
 }
 
+function ScreenTile({ screen }: { screen: ScreenShare }) {
+  const video = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const element = video.current;
+    if (!element) return;
+    screen.track.attach(element);
+    return () => { screen.track.detach(element); };
+  }, [screen.track]);
+  return (
+    <div className="screen-tile">
+      <div className="screen-title">
+        <MonitorUp size={16} /> Экран: {screen.name}{screen.isLocal && " (ты)"}
+        <button className="icon-btn sm" title="На весь экран" aria-label={`Показ ${screen.name} на весь экран`} onClick={() => void video.current?.requestFullscreen()}>
+          <Maximize2 size={15} />
+        </button>
+      </div>
+      <video ref={video} autoPlay playsInline muted={screen.isLocal} onDoubleClick={() => void video.current?.requestFullscreen()} />
+    </div>
+  );
+}
+
 export function ServerView({ server, onChanged, onRemoved }: { server: SavedServer; onChanged: () => void; onRemoved: () => void }) {
   const v = useVoice();
   const here = v.host === server.host;
@@ -139,6 +164,11 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
   const [name, setName] = useState(server.name);
   const [menu, setMenu] = useState(false);
   const [error, setError] = useState("");
+  const [shareDialog, setShareDialog] = useState(false);
+  const [shareQuality, setShareQuality] = useState<ScreenQuality>("1080p");
+  const [shareSource, setShareSource] = useState<ScreenSource>("monitor");
+  const [shareAudio, setShareAudio] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
 
   const handleError = useCallback((e: unknown) => {
     const code = errorCode(e);
@@ -232,6 +262,29 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
   }
 
   const roomName = (id: string | null) => rooms.find((r) => r.id === id)?.name ?? (id ? `Комната ${id.slice(1)}` : "");
+
+  async function startShare() {
+    setError("");
+    setShareBusy(true);
+    try {
+      const audioShared = await voice.setScreenShare(true, shareQuality, shareSource, shareAudio);
+      if (shareAudio && !audioShared) {
+        setError("Показ экрана запущен без звука: выбранный источник или WebView2 не предоставил звуковую дорожку.");
+      }
+      setShareDialog(false);
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "NotAllowedError") setShareDialog(false);
+      else handleError(e);
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  async function stopShare() {
+    setError("");
+    try { await voice.setScreenShare(false); }
+    catch (e) { handleError(e); }
+  }
 
   async function act(fn: () => Promise<unknown>) {
     setError("");
@@ -328,6 +381,11 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
             <h2 className="stage-title">
               <Volume2 size={18} /> {roomName(v.room)}
             </h2>
+            {v.screens.length > 0 && (
+              <div className="screens">
+                {v.screens.map((screen) => <ScreenTile key={screen.identity} screen={screen} />)}
+              </div>
+            )}
             <div className="peers">
               {v.peers.map((p) => <PeerTile key={p.identity} peer={{ ...p, role: roleById.get(p.identity) ?? p.role }} />)}
             </div>
@@ -401,6 +459,16 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
         </button>
         {connected && (
           <button
+            className={`icon-btn${v.screenSharing ? " on" : ""}`}
+            onClick={() => v.screenSharing ? void stopShare() : setShareDialog(true)}
+            disabled={v.state !== "connected" || shareBusy}
+            title={v.screenSharing ? "Остановить демонстрацию" : "Демонстрация экрана"}
+          >
+            {v.screenSharing ? <X size={18} /> : <MonitorUp size={18} />}
+          </button>
+        )}
+        {connected && (
+          <button
             className={`icon-btn${v.echo ? " on" : ""}`}
             onClick={() => void voice.setEcho(!v.echo).catch(handleError)}
             title={v.echo ? "Выключить эхо-тест" : "Эхо-тест: услышать себя так, как слышат друзья (только в наушниках)"}
@@ -433,6 +501,41 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
         />
       )}
       {dialog === "delete" && <DeleteDialog server={server} onClose={() => setDialog(null)} onDeleted={forget} />}
+      {shareDialog && (
+        <Modal title="Демонстрация экрана" sub="Настрой показ, затем выбери источник в системном диалоге." onClose={() => !shareBusy && setShareDialog(false)}>
+          <label className="field">
+            <span>Что показывать</span>
+            <select value={shareSource} onChange={(e) => setShareSource(e.target.value as ScreenSource)} disabled={shareBusy}>
+              <option value="monitor">Весь экран</option>
+              <option value="window">Окно приложения</option>
+            </select>
+            <small>Окончательный выбор экрана или окна делается в системном диалоге.</small>
+          </label>
+          <label className="field">
+            <span>Качество</span>
+            <select value={shareQuality} onChange={(e) => setShareQuality(e.target.value as ScreenQuality)} disabled={shareBusy}>
+              {(Object.keys(SCREEN_QUALITIES) as ScreenQuality[]).map((quality) => {
+                const { width, height } = SCREEN_QUALITIES[quality];
+                return <option key={quality} value={quality}>{quality} · {width}×{height} · 30 кадр/с</option>;
+              })}
+            </select>
+            <small>Фактическое разрешение зависит от выбранного экрана, а качество передачи — от сети и мощности компьютера.</small>
+          </label>
+          <label className="toggle">
+            <div>
+              <div className="t">Звук демонстрации</div>
+              <div className="d">Передача звука зависит от поддержки WebView2 и выбранного источника.</div>
+            </div>
+            <input type="checkbox" checked={shareAudio} onChange={(e) => setShareAudio(e.target.checked)} disabled={shareBusy} />
+          </label>
+          <div className="foot">
+            <button className="btn" onClick={() => setShareDialog(false)} disabled={shareBusy}>Отмена</button>
+            <button className="btn primary" onClick={() => void startShare()} disabled={shareBusy}>
+              <MonitorUp size={16} /> {shareBusy ? "Запускаю…" : "Начать показ"}
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 

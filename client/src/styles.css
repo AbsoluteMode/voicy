@@ -85,6 +85,13 @@ button { font: inherit; color: inherit; }
 .stage-empty .big { font-size: 18px; color: var(--text); margin-bottom: 6px; }
 .stage-empty .hint { margin-bottom: 20px; }
 
+.screens { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 14px; margin-bottom: 18px; }
+.screen-tile { min-width: 0; overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+.screen-title { display: flex; align-items: center; gap: 8px; padding: 10px 14px; font-weight: 600; }
+.screen-title .icon-btn { margin-left: auto; }
+.screen-tile video { display: block; width: 100%; max-height: min(60vh, 720px); aspect-ratio: 16 / 9; object-fit: contain; background: #050608; }
+.screen-tile video:fullscreen { max-height: none; aspect-ratio: auto; }
+
 .peers { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
 .peer {
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
