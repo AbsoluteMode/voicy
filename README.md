@@ -23,6 +23,13 @@ forwards packets untouched (SFU, no mixing or transcoding). Noise suppression, e
 off by default, because they are built for laptop speakers and hurt the sound on headphones. Each one can be
 turned on.
 
+## Screen sharing
+
+One button, then the system picker chooses a screen or a window and whether to share system audio (Windows
+gives sound only for a whole screen). The stream goes out at 1080p30 with 720p and 360p simulcast copies, so each
+viewer gets what fits their connection and the size of the stream on their screen, and unwatched layers are not
+encoded. Shared sound is stereo and leaves out everything voicy itself plays, so nobody hears the room echoed back.
+
 ## Layout
 
 ```

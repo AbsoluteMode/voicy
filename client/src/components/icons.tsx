@@ -69,6 +69,17 @@ export function SlidersIcon({ size = 20 }: P) {
   );
 }
 
+/** A screen with an arrow up out of it: sharing it. */
+export function ScreenIcon({ size = 20 }: P) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
+      <rect x="2.5" y="4" width="19" height="13" rx="2.6" fill="currentColor" />
+      <path d="M12 13.6V8M9.4 10.4 12 7.8l2.6 2.6" fill="none" stroke={cut} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.5 20.5h7" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function HangUpIcon({ size = 22 }: P) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden>

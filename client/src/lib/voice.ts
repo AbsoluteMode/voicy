@@ -3,9 +3,11 @@ import {
   AudioCaptureOptions,
   DisconnectReason,
   LocalAudioTrack,
+  LocalVideoTrack,
   Participant,
   RemoteParticipant,
   RemoteTrack,
+  RemoteVideoTrack,
   Room,
   RoomEvent,
   Track,
@@ -13,6 +15,7 @@ import {
 } from "livekit-client";
 
 import { DFN_MAX_REALTIME_FACTOR, dfnRealtimeFactor, VoicyNoiseProcessor } from "./noise";
+import { SCREEN_CAPTURE, SCREEN_PUBLISH } from "./screen";
 import { getSettings } from "./settings";
 import { api, Role, saveRecording } from "./tauri";
 
@@ -45,12 +48,21 @@ export interface PeerNet {
 /** Above either, the peer's connection is audibly unstable. */
 export const NET_BAD = { lossPct: 2, repairPct: 3 };
 
+export interface ScreenShare {
+  identity: string;
+  name: string;
+  isLocal: boolean;
+  track: LocalVideoTrack | RemoteVideoTrack;
+}
+
 export interface VoiceSnapshot {
   host: string | null;
   /** Voice room id (r1, r2, ...) on that host. */
   room: string | null;
   state: ConnState;
   peers: Peer[];
+  screens: ScreenShare[];
+  screenSharing: boolean;
   micMuted: boolean;
   deafened: boolean;
   /** WebView blocked autoplay; a click must call `startAudio`. */
@@ -80,6 +92,8 @@ const IDLE: VoiceSnapshot = {
   room: null,
   state: "idle",
   peers: [],
+  screens: [],
+  screenSharing: false,
   micMuted: false,
   deafened: false,
   audioBlocked: false,
@@ -90,6 +104,11 @@ const IDLE: VoiceSnapshot = {
 const SPEAKING_RMS = 0.01;
 /** Keeps the ring lit between words instead of flickering. */
 const SPEAKING_HOLD_MS = 350;
+/** Voice level shown by the ring: quiet speech to shouting, in dBFS RMS. */
+const LEVEL_FLOOR_DB = -42;
+const LEVEL_TOP_DB = -12;
+/** Per 50 ms tick: the ring jumps up with the voice and eases back down. */
+const LEVEL_RELEASE = 0.8;
 
 function captureOptions(): AudioCaptureOptions {
   const s = getSettings();
@@ -209,12 +228,31 @@ class VoiceSession {
       net: this.peerNet.get(p.identity),
     }));
     peers.sort((a, b) => Number(b.isLocal) - Number(a.isLocal) || a.name.localeCompare(b.name));
-    this.set({ peers, audioBlocked: !room.canPlaybackAudio });
+    const screens: ScreenShare[] = [];
+    for (const p of all) {
+      const track = p.getTrackPublication(Track.Source.ScreenShare)?.track;
+      if (track && track.kind === Track.Kind.Video) {
+        screens.push({
+          identity: p.identity,
+          name: p.name || p.identity,
+          isLocal: p === room.localParticipant,
+          track: track as LocalVideoTrack | RemoteVideoTrack,
+        });
+      }
+    }
+    this.set({
+      peers,
+      screens,
+      screenSharing: room.localParticipant.isScreenShareEnabled,
+      audioBlocked: !room.canPlaybackAudio,
+    });
   };
 
   private applyVolume(p: RemoteParticipant) {
-    const v = this.snap.deafened ? 0 : (getSettings().volumes[p.identity] ?? 1);
-    p.setVolume(v);
+    const deaf = this.snap.deafened;
+    p.setVolume(deaf ? 0 : (getSettings().volumes[p.identity] ?? 1));
+    // The member's slider is for their voice; stream sound only follows deafen.
+    p.setVolume(deaf ? 0 : 1, Track.Source.ScreenShareAudio);
   }
 
   /**
@@ -241,8 +279,10 @@ class VoiceSession {
       this.ctx = ctx;
       const s = getSettings();
       const room = new Room({
-        adaptiveStream: false,
-        dynacast: false,
+        // Video only: each viewer gets the stream layer that fits its tile
+        // (nothing while hidden), and layers nobody watches are not encoded.
+        adaptiveStream: { pixelDensity: "screen" },
+        dynacast: true,
         webAudioMix: { audioContext: ctx },
         audioCaptureDefaults: captureOptions(),
         audioOutput: s.outputDevice ? { deviceId: s.outputDevice } : undefined,
@@ -261,6 +301,9 @@ class VoiceSession {
         .on(RoomEvent.TrackMuted, this.refresh)
         .on(RoomEvent.TrackUnmuted, this.refresh)
         .on(RoomEvent.LocalTrackPublished, this.refresh)
+        .on(RoomEvent.LocalTrackUnpublished, this.refresh)
+        .on(RoomEvent.TrackPublished, this.refresh)
+        .on(RoomEvent.TrackUnpublished, this.refresh)
         .on(RoomEvent.ParticipantNameChanged, this.refresh)
         .on(RoomEvent.ParticipantMetadataChanged, this.refresh)
         .on(RoomEvent.AudioPlaybackStatusChanged, this.refresh)
@@ -321,6 +364,19 @@ class VoiceSession {
   private meterTimer: ReturnType<typeof setInterval> | undefined;
   private meterBuf = new Float32Array(512);
 
+  /**
+   * How loud each participant's voice is right now, 0..1. It changes 20 times
+   * a second, so it stays out of the snapshot: the UI subscribes with
+   * `onLevels` and moves the ring without re-rendering.
+   */
+  readonly levels = new Map<string, number>();
+  private levelListeners = new Set<() => void>();
+
+  onLevels(fn: () => void) {
+    this.levelListeners.add(fn);
+    return () => void this.levelListeners.delete(fn);
+  }
+
   /** The audio a participant actually sends: after noise suppression for us. */
   private audibleTrack(p: Participant): MediaStreamTrack | undefined {
     const pub = p.getTrackPublication(Track.Source.Microphone);
@@ -339,6 +395,7 @@ class VoiceSession {
     const now = performance.now();
     const present = new Set<string>();
     let changed = false;
+    let levelsMoved = false;
     for (const p of [room.localParticipant, ...room.remoteParticipants.values()]) {
       present.add(p.identity);
       const track = this.audibleTrack(p);
@@ -350,17 +407,30 @@ class VoiceSession {
       }
       if (!meter && track) {
         const src = ctx.createMediaStreamSource(new MediaStream([track]));
+        // Only the voice band counts: rumble and hiss don't move the ring.
+        const low = new BiquadFilterNode(ctx, { type: "highpass", frequency: 150 });
+        const high = new BiquadFilterNode(ctx, { type: "lowpass", frequency: 4000 });
         const an = ctx.createAnalyser();
         an.fftSize = this.meterBuf.length;
-        src.connect(an);
+        src.connect(low).connect(high).connect(an);
         meter = { track, src, an };
         this.meters.set(p.identity, meter);
       }
+      let target = 0;
       if (meter) {
         meter.an.getFloatTimeDomainData(this.meterBuf);
         let sum = 0;
         for (const v of this.meterBuf) sum += v * v;
-        if (Math.sqrt(sum / this.meterBuf.length) > SPEAKING_RMS) this.lastLoud.set(p.identity, now);
+        const rms = Math.sqrt(sum / this.meterBuf.length);
+        if (rms > SPEAKING_RMS) this.lastLoud.set(p.identity, now);
+        const db = 20 * Math.log10(rms || 1e-9);
+        target = Math.min(1, Math.max(0, (db - LEVEL_FLOOR_DB) / (LEVEL_TOP_DB - LEVEL_FLOOR_DB)));
+      }
+      const prev = this.levels.get(p.identity) ?? 0;
+      const level = target > prev ? target : prev * LEVEL_RELEASE < 0.01 ? 0 : prev * LEVEL_RELEASE;
+      if (level !== prev) {
+        this.levels.set(p.identity, level);
+        levelsMoved = true;
       }
       const on = now - (this.lastLoud.get(p.identity) ?? -Infinity) < SPEAKING_HOLD_MS;
       if (on !== this.speaking.has(p.identity)) {
@@ -376,7 +446,11 @@ class VoiceSession {
         this.speaking.delete(id);
       }
     }
+    for (const id of this.levels.keys()) {
+      if (!present.has(id)) this.levels.delete(id);
+    }
     if (changed) this.refresh();
+    if (levelsMoved) this.levelListeners.forEach((fn) => fn());
   };
 
   private stopMeters() {
@@ -385,6 +459,8 @@ class VoiceSession {
     this.meters.clear();
     this.lastLoud.clear();
     this.speaking.clear();
+    this.levels.clear();
+    this.levelListeners.forEach((fn) => fn());
   }
 
   private statsTimer: ReturnType<typeof setInterval> | undefined;
@@ -601,6 +677,19 @@ class VoiceSession {
     const { host, room } = this.snap;
     this.teardown();
     this.set({ ...IDLE, host, room });
+  }
+
+  /** Starting opens the system picker; what to show is chosen there. */
+  async setScreenShare(enabled: boolean) {
+    const room = this.room;
+    if (!room || this.snap.state !== "connected") return;
+    try {
+      await room.localParticipant.setScreenShareEnabled(enabled, SCREEN_CAPTURE, SCREEN_PUBLISH);
+    } catch (e) {
+      // Left the room while the picker was open: nothing to report.
+      if (this.room === room) throw e;
+    }
+    if (this.room === room) this.refresh();
   }
 
   async setMicMuted(muted: boolean) {

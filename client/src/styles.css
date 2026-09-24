@@ -115,21 +115,18 @@ button { font: inherit; color: inherit; }
 .av {
   flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
   color: var(--accent-ink); font-weight: 700; font-size: 12px;
+  transition: box-shadow .08s linear;
 }
-.av.speaking { animation: breathe 1.6s ease-in-out infinite; }
-@keyframes breathe {
-  0%, 100% { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent), 0 0 18px 1px color-mix(in oklch, var(--accent) 25%, transparent); }
-  50% { box-shadow: 0 0 0 2px var(--surface), 0 0 0 6px var(--accent), 0 0 26px 4px color-mix(in oklch, var(--accent) 35%, transparent); }
+/* --level (0..1) is how loud the voice is, set from voice.ts 20 times a second. */
+.av.speaking {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 calc(3px + 4px * var(--level, 0)) var(--accent),
+    0 0 calc(12px + 18px * var(--level, 0)) calc(4px * var(--level, 0)) color-mix(in oklch, var(--accent) 30%, transparent);
 }
 .av.off { width: 26px; height: 26px; font-size: 10px; font-weight: 600; background: var(--line); color: var(--muted); }
 
 .lvl { display: flex; gap: 2px; flex: none; }
-.lvl i { display: block; width: 4px; height: 5px; border-radius: 1.5px; background: #2a2a30; }
-.lvl.live i:nth-child(-n+8) { background: var(--accent); }
-.lvl.live i:nth-child(5) { animation: flick .5s ease-in-out infinite -.1s; }
-.lvl.live i:nth-child(6) { animation: flick .6s ease-in-out infinite -.3s; }
-.lvl.live i:nth-child(7) { animation: flick .45s ease-in-out infinite -.2s; }
-.lvl.live i:nth-child(8) { animation: flick .7s ease-in-out infinite; }
+.lvl i { display: block; width: 4px; height: 5px; border-radius: 1.5px; background: #2a2a30; transition: background .06s linear; }
+.lvl i.on { background: var(--accent); }
 @keyframes flick { 0%, 100% { opacity: 1; } 45% { opacity: .15; } }
 
 .state-ico { flex: none; width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; background: var(--line); color: var(--text); --cut: var(--line); }
@@ -141,6 +138,18 @@ button { font: inherit; color: inherit; }
 .role { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); }
 .acts { display: none; gap: 2px; }
 .prow:hover .acts, .mrow:hover .acts { display: flex; }
+
+/* ─── Shared screens ──────────────────────────────────────── */
+.screens { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 8px; margin: 6px 4px 10px; }
+.screen-tile { position: relative; min-width: 0; overflow: hidden; border-radius: var(--radius); background: #000; border: 1px solid var(--line); }
+.screen-tile video { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; }
+.screen-tile video:fullscreen { aspect-ratio: auto; }
+.screen-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, .7)); opacity: 0; transition: opacity .15s;
+}
+.screen-tile:hover .screen-bar { opacity: 1; }
+.screen-who { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ─── Dock ────────────────────────────────────────────────── */
 .dock-wrap { display: flex; justify-content: center; padding: 4px 10px 12px; }

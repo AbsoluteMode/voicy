@@ -1,10 +1,10 @@
-import { Circle, ImagePlus, LogOut, Pencil, Search, Shield, ShieldOff, Trash2, Upload, UserMinus } from "lucide-react";
+import { Circle, ImagePlus, LogOut, Maximize2, Pencil, Search, Shield, ShieldOff, Trash2, Upload, UserMinus } from "lucide-react";
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
 
 import { syncAvatar } from "../lib/avatar";
 import { updateSettings, useSettings } from "../lib/settings";
 import { api, avatarUrl, errorCode, errorText, forgetServer, Member, Role, RoomInfo, SavedServer } from "../lib/tauri";
-import { AudioStats, EndReason, NET_BAD, Peer, useVoice, voice } from "../lib/voice";
+import { AudioStats, EndReason, NET_BAD, Peer, ScreenShare, useVoice, voice } from "../lib/voice";
 import { AvatarDialog, removeAvatar } from "./AvatarDialog";
 import { DeleteDialog } from "./DeleteDialog";
 import {
@@ -16,6 +16,7 @@ import {
   MoreIcon,
   PhoneIcon,
   PlusIcon,
+  ScreenIcon,
   SlidersIcon,
   WeakSignalIcon,
 } from "./icons";
@@ -45,11 +46,33 @@ function statsTitle(s?: AudioStats) {
     .join(" · ");
 }
 
-/** Twelve segments; they only move while someone is actually talking. */
-function Level({ live }: { live: boolean }) {
+/** Feeds `--level` (voice loudness, 0..1) to the element's CSS, outside React renders. */
+function useVoiceLevel<T extends HTMLElement>(identity: string) {
+  const ref = useRef<T>(null);
+  useEffect(() => {
+    const show = () => ref.current?.style.setProperty("--level", (voice.levels.get(identity) ?? 0).toFixed(2));
+    show();
+    return voice.onLevels(show);
+  }, [identity]);
+  return ref;
+}
+
+const LEVEL_SEGMENTS = 12;
+
+/** Twelve segments lit by how loud this person's voice is right now. */
+function Level({ identity }: { identity: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const show = () => {
+      const lit = Math.round((voice.levels.get(identity) ?? 0) * LEVEL_SEGMENTS);
+      ref.current?.querySelectorAll("i").forEach((seg, i) => seg.classList.toggle("on", i < lit));
+    };
+    show();
+    return voice.onLevels(show);
+  }, [identity]);
   return (
-    <div className={`lvl${live ? " live" : ""}`} aria-hidden>
-      {Array.from({ length: 12 }, (_, i) => <i key={i} />)}
+    <div ref={ref} className="lvl" aria-hidden>
+      {Array.from({ length: LEVEL_SEGMENTS }, (_, i) => <i key={i} />)}
     </div>
   );
 }
@@ -76,6 +99,28 @@ function RecordButton({ identity }: { identity: string }) {
     <button className="icon-btn sm" onClick={record} title={done || "Записать 15 секунд, как этот человек звучит у тебя, в «Загрузки»"} aria-label="Записать звук">
       <Circle size={12} />
     </button>
+  );
+}
+
+function ScreenTile({ screen }: { screen: ScreenShare }) {
+  const video = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const element = video.current;
+    if (!element) return;
+    screen.track.attach(element);
+    return () => void screen.track.detach(element);
+  }, [screen.track]);
+  const fullscreen = () => void video.current?.requestFullscreen();
+  return (
+    <div className="screen-tile">
+      <video ref={video} autoPlay playsInline muted onDoubleClick={fullscreen} />
+      <div className="screen-bar">
+        <span className="screen-who">{screen.name}{screen.isLocal && " · ты"}</span>
+        <button className="icon-btn sm" title="На весь экран (двойной клик)" aria-label="На весь экран" onClick={fullscreen}>
+          <Maximize2 size={14} />
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -147,6 +192,7 @@ function MeMenu({ onClose, onFile, onPinterest }: { onClose: () => void; onFile:
  */
 function PeerRow(props: { peer: Peer; avatar: string | null; actions?: ReactNode; onClick?: () => void; children?: ReactNode }) {
   const { peer, actions } = props;
+  const level = useVoiceLevel<HTMLDivElement>(peer.identity);
   const settings = useSettings();
   const volume = settings.volumes[peer.identity] ?? 1;
   const [touched, setTouched] = useState(false);
@@ -171,6 +217,7 @@ function PeerRow(props: { peer: Peer; avatar: string | null; actions?: ReactNode
 
   return (
     <div
+      ref={level}
       className={`prow${props.onClick ? " self" : ""}`}
       onClick={props.onClick}
       onWheel={onWheel}
@@ -210,7 +257,7 @@ function PeerRow(props: { peer: Peer; avatar: string | null; actions?: ReactNode
           <WeakSignalIcon size={13} />
         </span>
       ) : (
-        <Level live={peer.speaking} />
+        <Level identity={peer.identity} />
       )}
       {props.children}
     </div>
@@ -232,6 +279,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
   const [avatarFile, setAvatarFile] = useState<File>();
   const [menu, setMenu] = useState(false);
   const [error, setError] = useState("");
+  const [shareBusy, setShareBusy] = useState(false);
 
   const handleError = useCallback((e: unknown) => {
     const code = errorCode(e);
@@ -339,6 +387,19 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
     if (target) void join(target.id);
   };
 
+  async function toggleShare() {
+    setError("");
+    setShareBusy(true);
+    try {
+      await voice.setScreenShare(!v.screenSharing);
+    } catch (e) {
+      // Closing the system picker is not an error.
+      if (!(e instanceof DOMException && e.name === "NotAllowedError")) handleError(e);
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
   async function act(fn: () => Promise<unknown>) {
     setError("");
     try {
@@ -429,6 +490,11 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
         {connected && v.audioBlocked && (
           <div className="notice">
             Звук заблокирован. <button className="btn" onClick={() => voice.startAudio()}>Включить звук</button>
+          </div>
+        )}
+        {connected && v.screens.length > 0 && (
+          <div className="screens">
+            {v.screens.map((s) => <ScreenTile key={s.identity} screen={s} />)}
           </div>
         )}
 
@@ -523,6 +589,17 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
           >
             {v.deafened ? <HeadphonesOffIcon /> : <HeadphonesIcon />}
           </button>
+          {connected && (
+            <button
+              className={`dbtn${v.screenSharing ? " on" : ""}`}
+              onClick={() => void toggleShare()}
+              disabled={v.state !== "connected" || shareBusy}
+              aria-label={v.screenSharing ? "Остановить демонстрацию" : "Показать экран"}
+              title={v.screenSharing ? "Остановить демонстрацию" : "Показать экран"}
+            >
+              <ScreenIcon />
+            </button>
+          )}
           <button className="dbtn ghost" onClick={() => setDialog("settings")} aria-label="Настройки" title="Настройки">
             <SlidersIcon />
           </button>
