@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { defaultSshKey, SshCreds } from "../lib/tauri";
+import { defaultSshKey, errorCode, errorText, SshCreds } from "../lib/tauri";
 
 export interface SshFormState {
   host: string;
@@ -37,7 +37,17 @@ export function useSshForm() {
     Number(state.port) > 0 &&
     (state.method === "password" ? state.password !== "" : state.keyPath.trim() !== "");
 
-  const creds = (): SshCreds => ({
+  // SSH host key trust: the backend refuses unknown or changed server keys
+  // before sending any credential, and the user decides here.
+  const [hostKey, setHostKey] = useState<{ kind: "unknown" | "changed"; fingerprint: string } | null>(null);
+  const [trust, setTrust] = useState<{ fingerprint: string; replace: boolean } | null>(null);
+  const endpoint = `${state.host.trim().toLowerCase()}:${state.port}`;
+  useEffect(() => {
+    setHostKey(null);
+    setTrust(null);
+  }, [endpoint]);
+
+  const creds = (override = trust): SshCreds => ({
     host: state.host.trim(),
     port: Number(state.port) || 22,
     user: state.user.trim(),
@@ -45,9 +55,59 @@ export function useSshForm() {
       state.method === "password"
         ? { kind: "password", password: state.password }
         : { kind: "key", path: state.keyPath.trim(), passphrase: state.passphrase || undefined },
+    trust_fingerprint: override?.fingerprint,
+    replace_known: override?.replace ?? false,
   });
 
-  return { state, setState, valid, creds };
+  /** True if `e` was a host key question, which is now shown to the user. */
+  const catchHostKey = (e: unknown) => {
+    const code = errorCode(e);
+    if (code !== "hostkey_unknown" && code !== "hostkey_changed") return false;
+    setHostKey({ kind: code === "hostkey_unknown" ? "unknown" : "changed", fingerprint: errorText(e) });
+    return true;
+  };
+
+  /** Trusts the shown key and returns credentials to retry with. */
+  const approveHostKey = (): SshCreds => {
+    const next = hostKey ? { fingerprint: hostKey.fingerprint, replace: hostKey.kind === "changed" } : trust;
+    setTrust(next);
+    setHostKey(null);
+    return creds(next);
+  };
+
+  const dismissHostKey = () => setHostKey(null);
+
+  return { state, setState, valid, creds, hostKey, catchHostKey, approveHostKey, dismissHostKey };
+}
+
+/** Asks the user to trust a first-seen (or changed) SSH server key. */
+export function HostKeyPrompt({ form, onApprove }: { form: ReturnType<typeof useSshForm>; onApprove: () => void }) {
+  const k = form.hostKey;
+  if (!k) return null;
+  const changed = k.kind === "changed";
+  return (
+    <div className={changed ? "error" : "notice"} style={{ marginTop: 0 }}>
+      {changed ? (
+        <>
+          <b>Ключ сервера изменился.</b> Так бывает, если ты переустановил систему на VPS. Если нет, кто-то может перехватывать подключение: ничего не отправляй.
+        </>
+      ) : (
+        <>
+          <b>Первое подключение к {form.state.host.trim()}.</b> Сверь отпечаток ключа сервера с панелью хостера или с выводом команды{" "}
+          <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code> на сервере.
+        </>
+      )}
+      <div className="selectable" style={{ fontFamily: "Cascadia Mono, Consolas, monospace", margin: "8px 0", wordBreak: "break-all" }}>
+        {k.fingerprint}
+      </div>
+      <div className="row" style={{ gap: 8 }}>
+        <button type="button" className="btn" onClick={form.dismissHostKey}>Отмена</button>
+        <button type="button" className={`btn ${changed ? "danger" : "primary"}`} onClick={onApprove}>
+          {changed ? "Я переустанавливал VPS, доверять" : "Доверять и продолжить"}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export function SshForm({ form, disabled }: { form: ReturnType<typeof useSshForm>; disabled?: boolean }) {

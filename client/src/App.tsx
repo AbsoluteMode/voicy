@@ -29,25 +29,27 @@ export default function App() {
     void reload();
   }, [reload]);
 
-  // Joining puts you straight into the voice channel.
+  // The mic goes live only from an explicit "Войти" click, never from a
+  // link or the clipboard alone, and never replaces a call in progress.
   const added = useCallback(
     (s: SavedServer, connect: boolean) => {
       setDialog(null);
       void reload().then(() => {
         setSelected(s.host);
-        if (connect && voice.getSnapshot().host !== s.host) void voice.connect(s.host).catch(() => {});
+        if (connect && voice.getSnapshot().state === "idle") void voice.connect(s.host).catch(() => {});
       });
     },
     [reload],
   );
 
-  // With a known nickname an invite needs no questions at all.
+  // A clicked voicy:// link joins the server without questions when the
+  // nickname is known; the voice channel still waits for a click.
   const handleInvite = useCallback(
     async (link: string) => {
       const nickname = getSettings().nickname;
       if (!nickname) return setDialog({ kind: "join", link });
       try {
-        added(await joinServer(link, nickname), true);
+        added(await joinServer(link, nickname), false);
       } catch (e) {
         setDialog({ kind: "join", link, error: errorText(e) });
       }
@@ -69,7 +71,8 @@ export default function App() {
   }, [handleInvite]);
 
   // An invite copied to the clipboard (the invite page does this on
-  // download) opens the join form by itself, on start and on focus.
+  // download) opens the join form on start and on focus. It only asks: the
+  // user may just be forwarding the link to someone else.
   const dismissed = useRef(new Set<string>());
   useEffect(() => {
     const check = () =>
@@ -77,13 +80,13 @@ export default function App() {
         .then((link) => {
           if (!link || dismissed.current.has(link)) return;
           dismissed.current.add(link);
-          void handleInvite(link);
+          setDialog((d) => d ?? { kind: "join", link });
         })
         .catch(() => {});
     void check();
     window.addEventListener("focus", check);
     return () => window.removeEventListener("focus", check);
-  }, [handleInvite]);
+  }, []);
 
   const current = servers.find((s) => s.host === selected);
 

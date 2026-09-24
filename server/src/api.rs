@@ -29,6 +29,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/invites", get(list_invites).post(create_invite))
         .route("/api/invites/{id}", delete(revoke_invite))
         .route("/api/server", delete(delete_server))
+        .route("/api/rtc-auth", get(rtc_auth))
         .route("/join/{code}", get(crate::invite_page::page))
         .with_state(state)
 }
@@ -222,6 +223,33 @@ async fn revoke_invite(
     }
 }
 
+/// `access_token` from a LiveKit signalling URL such as
+/// `/rtc/v1?access_token=...&auto_subscribe=1`.
+fn access_token(uri: &str) -> Option<&str> {
+    let (_, query) = uri.split_once('?')?;
+    query.split('&').find_map(|kv| kv.strip_prefix("access_token="))
+}
+
+/// Caddy asks this (`forward_auth`) before every LiveKit signalling
+/// connection, including reconnects and resumes. Self-hosted LiveKit cannot
+/// revoke tokens, so this is what keeps kicked members and deleted servers
+/// out: their tokens stay cryptographically valid until they expire.
+async fn rtc_auth(State(s): State<SharedState>, headers: axum::http::HeaderMap) -> ApiResult<StatusCode> {
+    if s.db.is_deleted()? {
+        return Err(ApiError::Gone);
+    }
+    let identity = headers
+        .get("x-forwarded-uri")
+        .and_then(|v| v.to_str().ok())
+        .and_then(access_token)
+        .and_then(|t| s.lk.verify_identity(t))
+        .ok_or(ApiError::Unauthorized)?;
+    if s.db.member(&identity)?.is_none() {
+        return Err(ApiError::Forbidden("not a member"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn delete_server(State(s): State<SharedState>, auth: AuthMember) -> ApiResult<StatusCode> {
     auth.require(Role::Owner)?;
     s.db.wipe()?;
@@ -230,4 +258,17 @@ async fn delete_server(State(s): State<SharedState>, auth: AuthMember) -> ApiRes
     }
     tracing::info!("server deleted by owner {}", auth.0.nickname);
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::access_token;
+
+    #[test]
+    fn access_token_from_signal_uri() {
+        assert_eq!(access_token("/rtc/v1?auto_subscribe=1&access_token=a.b.c&sdk=js"), Some("a.b.c"));
+        assert_eq!(access_token("/rtc?access_token=x"), Some("x"));
+        assert_eq!(access_token("/rtc/v1?sdk=js"), None);
+        assert_eq!(access_token("/rtc"), None);
+    }
 }

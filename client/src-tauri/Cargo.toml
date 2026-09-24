@@ -29,6 +29,9 @@ tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tokio = { version = "1", features = ["time"] }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
 [profile.release]
 codegen-units = 1
 lto = true

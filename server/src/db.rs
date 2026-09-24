@@ -270,3 +270,48 @@ impl Db {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn db() -> Db {
+        Db::open(":memory:").unwrap()
+    }
+
+    #[test]
+    fn owner_invite_is_single_use_and_only_while_ownerless() {
+        let db = db();
+        assert!(db.ensure_owner_invite("owner-code", 0).unwrap());
+        let Redeem::Ok(owner) = db.redeem_invite("owner-code", "izzy", "s1", 1).unwrap() else { panic!() };
+        assert_eq!(owner.role, Role::Owner);
+        assert!(matches!(db.redeem_invite("owner-code", "x", "s2", 2).unwrap(), Redeem::InvalidCode));
+        // A new bootstrap code cannot mint a second owner.
+        assert!(!db.ensure_owner_invite("another", 3).unwrap());
+    }
+
+    #[test]
+    fn member_invites_expire_and_can_be_revoked() {
+        let db = db();
+        db.create_invite("fresh", "owner", 100, Some(200)).unwrap();
+        db.create_invite("stale", "owner", 100, Some(150)).unwrap();
+        let revoked = db.create_invite("revoked", "owner", 100, None).unwrap();
+        assert_eq!(db.active_invites(160).unwrap().len(), 2);
+        assert!(db.revoke_invite(&revoked.id).unwrap());
+        assert!(matches!(db.redeem_invite("revoked", "a", "s", 160).unwrap(), Redeem::InvalidCode));
+        assert!(matches!(db.redeem_invite("stale", "a", "s", 160).unwrap(), Redeem::InvalidCode));
+        let Redeem::Ok(m) = db.redeem_invite("fresh", "a", "s", 160).unwrap() else { panic!() };
+        assert_eq!(m.role, Role::Member);
+    }
+
+    #[test]
+    fn wipe_forgets_everyone_and_blocks_bootstrap() {
+        let db = db();
+        db.ensure_owner_invite("code", 0).unwrap();
+        db.redeem_invite("code", "izzy", "s", 1).unwrap();
+        db.wipe().unwrap();
+        assert!(db.is_deleted().unwrap());
+        assert!(db.members().unwrap().is_empty());
+        assert!(!db.ensure_owner_invite("code2", 2).unwrap());
+    }
+}

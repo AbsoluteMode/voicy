@@ -34,11 +34,27 @@ export interface SshCreds {
   port: number;
   user: string;
   auth: SshAuth;
+  /** Server key fingerprint the user approved. */
+  trust_fingerprint?: string;
+  /** The user confirmed a changed server key is expected. */
+  replace_known?: boolean;
 }
 
-/** Shape of every rejected command, see src-tauri/src/error.rs. */
+/**
+ * Shape of every rejected command, see src-tauri/src/error.rs. For the
+ * hostkey codes the message is the server's key fingerprint.
+ */
 export interface CmdError {
-  code: "unauthorized" | "gone" | "forbidden" | "network" | "ssh" | "invalid" | "other";
+  code:
+    | "unauthorized"
+    | "gone"
+    | "forbidden"
+    | "network"
+    | "ssh"
+    | "hostkey_unknown"
+    | "hostkey_changed"
+    | "invalid"
+    | "other";
   message: string;
 }
 

@@ -2,8 +2,8 @@
 //! we need, spoken over Twirp's JSON encoding.
 
 use anyhow::{bail, Result};
-use jsonwebtoken::{encode, EncodingKey, Header};
-use serde::Serialize;
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::db::now;
@@ -88,6 +88,21 @@ impl LiveKit {
         )
     }
 
+    /// Identity of a valid token signed with our key. That includes the
+    /// tokens LiveKit itself refreshes for connected participants.
+    pub fn verify_identity(&self, token: &str) -> Option<String> {
+        #[derive(Deserialize)]
+        struct Sub {
+            sub: String,
+        }
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_required_spec_claims(&["exp", "sub"]);
+        validation.leeway = 10;
+        decode::<Sub>(token, &DecodingKey::from_secret(self.secret.as_bytes()), &validation)
+            .ok()
+            .map(|t| t.claims.sub)
+    }
+
     async fn room_service(&self, method: &str, room: &str, body: serde_json::Value) -> Result<()> {
         let token = self.sign(
             "voicy-server",
@@ -123,5 +138,20 @@ impl LiveKit {
 
     pub async fn delete_room(&self, room: &str) -> Result<()> {
         self.room_service("DeleteRoom", room, json!({ "room": room })).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LiveKit;
+
+    #[test]
+    fn join_tokens_verify_only_with_our_secret() {
+        let lk = LiveKit::new("http://127.0.0.1:7880", "key", "secret");
+        let token = lk.join_token("main", "member-1", "izzy", "{}".into()).unwrap();
+        assert_eq!(lk.verify_identity(&token).as_deref(), Some("member-1"));
+        let other = LiveKit::new("http://127.0.0.1:7880", "key", "other-secret");
+        assert_eq!(other.verify_identity(&token), None);
+        assert_eq!(lk.verify_identity("garbage"), None);
     }
 }

@@ -143,6 +143,15 @@ struct DeployReq {
     nickname: String,
 }
 
+fn ssh_error(e: anyhow::Error) -> CmdError {
+    match e.downcast_ref::<deploy::HostKeyError>() {
+        Some(deploy::HostKeyError::Unknown { fingerprint }) => CmdError::new("hostkey_unknown", fingerprint.clone()),
+        // The message is the new fingerprint, for the "trust it" override.
+        Some(deploy::HostKeyError::Changed { got, .. }) => CmdError::new("hostkey_changed", got.clone()),
+        None => CmdError::new("ssh", format!("{e:#}")),
+    }
+}
+
 #[tauri::command]
 async fn deploy_server(app: AppHandle, req: DeployReq, on_log: Channel<String>) -> CmdResult<SavedServer> {
     let mut code = [0u8; 24];
@@ -151,9 +160,13 @@ async fn deploy_server(app: AppHandle, req: DeployReq, on_log: Channel<String>) 
     let log = |line: String| {
         let _ = on_log.send(line);
     };
-    let host = deploy::install(req.ssh, &req.server_name, &code, log)
+    let endpoint = req.ssh.endpoint();
+    let known = store::known_host(&app, &endpoint)?;
+    let installed = deploy::install(req.ssh, known, &req.server_name, &code, log)
         .await
-        .map_err(|e| CmdError::new("ssh", format!("{e:#}")))?;
+        .map_err(ssh_error)?;
+    store::remember_host(&app, &endpoint, &installed.fingerprint)?;
+    let host = installed.public_host;
     let _ = on_log.send(format!("Сервер работает: https://{host}"));
     redeem(&app, &host, &code, &req.nickname).await.map_err(|e| {
         if e.code == "forbidden" {
@@ -165,13 +178,15 @@ async fn deploy_server(app: AppHandle, req: DeployReq, on_log: Channel<String>) 
 }
 
 #[tauri::command]
-async fn uninstall_server(ssh: deploy::SshCreds, on_log: Channel<String>) -> CmdResult<()> {
+async fn uninstall_server(app: AppHandle, ssh: deploy::SshCreds, on_log: Channel<String>) -> CmdResult<()> {
     let log = |line: String| {
         let _ = on_log.send(line);
     };
-    deploy::uninstall(ssh, log)
-        .await
-        .map_err(|e| CmdError::new("ssh", format!("{e:#}")))
+    let endpoint = ssh.endpoint();
+    let known = store::known_host(&app, &endpoint)?;
+    let fingerprint = deploy::uninstall(ssh, known, log).await.map_err(ssh_error)?;
+    store::remember_host(&app, &endpoint, &fingerprint)?;
+    Ok(())
 }
 
 #[tauri::command]

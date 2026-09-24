@@ -121,21 +121,31 @@ class VoiceSession {
     p.setVolume(v);
   }
 
+  /**
+   * Bumped by every connect and disconnect. An attempt that finds it changed
+   * after an await has been superseded and must not touch the mic or state.
+   */
+  private generation = 0;
+
   async connect(host: string) {
-    if (this.room) await this.disconnect();
+    const gen = ++this.generation;
+    const stale = () => gen !== this.generation;
+    this.teardown();
     this.set({ ...IDLE, host, state: "connecting", micMuted: !this.micWanted });
 
     try {
       const { url, token } = await api<{ url: string; token: string }>(host, "POST", "/api/token");
+      if (stale()) return;
 
       // One 48 kHz context for all playback: no resampling, and gain nodes
       // let per-member volume go above 100%.
-      this.ctx = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
+      const ctx = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
+      this.ctx = ctx;
       const s = getSettings();
       const room = new Room({
         adaptiveStream: false,
         dynacast: false,
-        webAudioMix: { audioContext: this.ctx },
+        webAudioMix: { audioContext: ctx },
         audioCaptureDefaults: captureOptions(),
         audioOutput: s.outputDevice ? { deviceId: s.outputDevice } : undefined,
         publishDefaults: publishOptions(),
@@ -185,12 +195,17 @@ class VoiceSession {
           this.set({ ...IDLE, host, endReason });
         });
 
+      // Superseded attempts already had their room closed by teardown().
       await room.connect(url, token, { autoSubscribe: true });
+      if (stale()) return;
       this.set({ state: "connected" });
       await room.localParticipant.setMicrophoneEnabled(this.micWanted);
+      if (stale()) return;
       await this.applyNoise();
       this.refresh();
     } catch (e) {
+      // A newer session owns the state now; this failure is not its problem.
+      if (stale()) return;
       this.teardown();
       const msg = e instanceof Error ? e.message : typeof e === "object" && e && "message" in e ? String(e.message) : String(e);
       this.set({ ...IDLE, host, error: msg, endReason: /full|max/i.test(msg) ? "full" : undefined });
@@ -208,12 +223,19 @@ class VoiceSession {
   }
 
   async disconnect() {
+    this.generation++;
     const host = this.snap.host;
     this.teardown();
     this.set({ ...IDLE, host });
   }
 
   async setMicMuted(muted: boolean) {
+    // Unmuting while deafened undeafens too: talking into a room you
+    // cannot hear is never what the click meant.
+    if (!muted && this.snap.deafened) {
+      this.set({ deafened: false });
+      this.room?.remoteParticipants.forEach((p) => this.applyVolume(p));
+    }
     this.micWanted = !muted;
     this.set({ micMuted: muted });
     await this.room?.localParticipant.setMicrophoneEnabled(!muted);
@@ -289,7 +311,9 @@ class VoiceSession {
     const room = this.room;
     if (!room) return;
     const s = getSettings();
-    if (s.outputDevice) await room.switchActiveDevice("audiooutput", s.outputDevice).catch(() => {});
+    // "" is the system default and has to be applied explicitly too, or a
+    // call stays on the previously chosen device.
+    await room.switchActiveDevice("audiooutput", s.outputDevice || "default").catch((e) => console.warn("output switch failed", e));
     const pub = room.localParticipant.getTrackPublication(Track.Source.Microphone);
     const track = pub?.track as LocalAudioTrack | undefined;
     if (!track) return;

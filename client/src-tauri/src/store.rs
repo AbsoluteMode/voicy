@@ -73,3 +73,33 @@ pub fn remove(app: &AppHandle, host: &str) -> Result<()> {
         Err(e) => Err(e.into()),
     }
 }
+
+/// SSH key fingerprints of VPSes this app has deployed to, by `host:port`.
+fn known_hosts_file(app: &AppHandle) -> Result<PathBuf> {
+    Ok(file(app)?.with_file_name("known_hosts.json"))
+}
+
+fn known_hosts(app: &AppHandle) -> Result<std::collections::BTreeMap<String, String>> {
+    let path = known_hosts_file(app)?;
+    if !path.exists() {
+        return Ok(Default::default());
+    }
+    Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+}
+
+pub fn known_host(app: &AppHandle, endpoint: &str) -> Result<Option<String>> {
+    Ok(known_hosts(app)?.remove(endpoint))
+}
+
+pub fn remember_host(app: &AppHandle, endpoint: &str, fingerprint: &str) -> Result<()> {
+    let mut all = known_hosts(app)?;
+    if all.get(endpoint).map(String::as_str) == Some(fingerprint) {
+        return Ok(());
+    }
+    all.insert(endpoint.to_owned(), fingerprint.to_owned());
+    let path = known_hosts_file(app)?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(&all)?)?;
+    fs::rename(tmp, path)?;
+    Ok(())
+}

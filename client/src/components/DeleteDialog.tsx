@@ -1,7 +1,7 @@
 import { useState } from "react";
 
-import { api, errorCode, errorText, SavedServer, uninstallServer } from "../lib/tauri";
-import { LogView, SshForm, useSshForm } from "./SshForm";
+import { api, errorCode, errorText, SavedServer, SshCreds, uninstallServer } from "../lib/tauri";
+import { HostKeyPrompt, LogView, SshForm, useSshForm } from "./SshForm";
 import { Modal } from "./ui";
 
 type Line = { text: string; kind?: "ok" | "err" };
@@ -18,7 +18,7 @@ export function DeleteDialog({ server, onClose, onDeleted }: { server: SavedServ
   const [lines, setLines] = useState<Line[]>([]);
   const [error, setError] = useState("");
 
-  async function run() {
+  async function run(creds: SshCreds = ssh.creds()) {
     setBusy(true);
     setError("");
     setLines([]);
@@ -31,12 +31,12 @@ export function DeleteDialog({ server, onClose, onDeleted }: { server: SavedServ
         if (errorCode(e) !== "gone") throw e;
       }
       if (wipeVps) {
-        await uninstallServer(ssh.creds(), (text) => setLines((l) => [...l, { text }]));
+        await uninstallServer(creds, (text) => setLines((l) => [...l, { text }]));
         setLines((l) => [...l, { text: "VPS очищен.", kind: "ok" }]);
       }
       onDeleted();
     } catch (e) {
-      setError(errorText(e));
+      if (!ssh.catchHostKey(e)) setError(errorText(e));
       setBusy(false);
     }
   }
@@ -64,11 +64,12 @@ export function DeleteDialog({ server, onClose, onDeleted }: { server: SavedServ
         </label>
       </div>
       {wipeVps && <SshForm form={ssh} disabled={busy} />}
+      <HostKeyPrompt form={ssh} onApprove={() => void run(ssh.approveHostKey())} />
       {lines.length > 0 && <LogView lines={lines} />}
       {error && <div className="error">{error}</div>}
       <div className="foot">
         {!busy && <button className="btn" onClick={onClose}>Отмена</button>}
-        <button className="btn danger" disabled={busy || !ready} onClick={run}>
+        <button className="btn danger" disabled={busy || !ready} onClick={() => void run()}>
           {busy ? "Удаляю…" : "Удалить навсегда"}
         </button>
       </div>

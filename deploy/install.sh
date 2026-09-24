@@ -66,6 +66,10 @@ install_docker() {
 install_docker
 command -v curl >/dev/null || apt-get install -y -qq curl >/dev/null
 mkdir -p "$DIR/data"
+# .env and livekit.yaml hold the LiveKit signing secret, which would let any
+# local user mint tokens. Containers run as root or read through bind
+# mounts, so root-only files are enough.
+chmod 700 "$DIR"
 chown 10001 "$DIR/data"
 
 # Keep what a previous run decided (ports, secrets); name and image can be
@@ -142,7 +146,7 @@ room:
 logging:
   level: info
 EOF
-chmod 644 "$DIR/livekit.yaml"
+chmod 600 "$DIR/livekit.yaml"
 umask 022
 
 cat > "$DIR/Caddyfile" <<'EOF'
@@ -159,9 +163,19 @@ cat > "$DIR/Caddyfile" <<'EOF'
 	handle /join/* {
 		reverse_proxy 127.0.0.1:8080
 	}
-	# LiveKit signalling (/rtc websocket)
-	handle {
+	# LiveKit signalling. voicy-server checks membership before every
+	# connect, reconnect and resume: self-hosted LiveKit cannot revoke the
+	# tokens of kicked members itself.
+	@rtc path /rtc /rtc/*
+	handle @rtc {
+		forward_auth 127.0.0.1:8080 {
+			uri /api/rtc-auth
+		}
 		reverse_proxy 127.0.0.1:7880
+	}
+	# Nothing else of LiveKit (e.g. its Twirp API) is public.
+	handle {
+		respond 404
 	}
 }
 EOF

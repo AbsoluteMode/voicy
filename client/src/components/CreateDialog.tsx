@@ -1,8 +1,8 @@
 import { FormEvent, useState } from "react";
 
 import { getSettings, updateSettings } from "../lib/settings";
-import { deployServer, errorText, SavedServer } from "../lib/tauri";
-import { LogView, SshForm, useSshForm } from "./SshForm";
+import { deployServer, errorText, SavedServer, SshCreds } from "../lib/tauri";
+import { HostKeyPrompt, LogView, SshForm, useSshForm } from "./SshForm";
 import { Modal } from "./ui";
 
 type Line = { text: string; kind?: "ok" | "err" };
@@ -17,20 +17,28 @@ export function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCr
 
   const push = (l: Line) => setLines((prev) => [...prev, l]);
 
-  async function submit(e: FormEvent) {
+  function submit(e: FormEvent) {
     e.preventDefault();
+    void run(ssh.creds());
+  }
+
+  async function run(creds: SshCreds) {
     setPhase("running");
     setLines([]);
     setError("");
     try {
       const server = await deployServer(
-        { ssh: ssh.creds(), server_name: name.trim() || "Voicy", nickname: nickname.trim() },
+        { ssh: creds, server_name: name.trim() || "Voicy", nickname: nickname.trim() },
         (text) => push({ text, kind: text.startsWith("VOICY_OK") ? "ok" : text.startsWith("VOICY_ERROR") ? "err" : undefined }),
       );
       updateSettings({ nickname: nickname.trim() });
       push({ text: "Готово! Ты владелец сервера.", kind: "ok" });
       onCreated(server);
     } catch (err) {
+      if (ssh.catchHostKey(err)) {
+        setPhase("form");
+        return;
+      }
       const msg = errorText(err);
       push({ text: msg, kind: "err" });
       setError(msg);
@@ -63,6 +71,7 @@ export function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCr
             </div>
           </>
         ) : null}
+        <HostKeyPrompt form={ssh} onApprove={() => void run(ssh.approveHostKey())} />
         {lines.length > 0 && <LogView lines={lines} />}
         {phase === "failed" && error && (
           <div className="error">
