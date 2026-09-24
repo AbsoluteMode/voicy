@@ -1,7 +1,9 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useRef, useState } from "react";
 
 import { NOISE_MODES, VoicyNoiseProcessor } from "../lib/noise";
 import { AudioSettings, BITRATES, updateSettings, useSettings } from "../lib/settings";
+import { checkForUpdate, confirmAndInstall, useUpdater } from "../lib/updater";
 import { useVoice, voice } from "../lib/voice";
 import { Modal, Toggle } from "./ui";
 
@@ -47,15 +49,14 @@ function MicMeter({ s }: { s: AudioSettings }) {
       .then(async (st) => {
         if (cancelled) return st.getTracks().forEach((t) => t.stop());
         stream = st;
+        // The same processor as in a call, so this is exactly what is sent.
         let track = st.getAudioTracks()[0];
-        if (s.noise !== "off") {
-          setStatus("Загружаю шумоподавление…");
-          noise = new VoicyNoiseProcessor(s.noise);
-          await noise.init({ track });
-          if (cancelled) return;
-          track = noise.processedTrack ?? track;
-          setStatus("");
-        }
+        if (s.noise !== "off") setStatus("Загружаю шумоподавление…");
+        noise = new VoicyNoiseProcessor(s.noise);
+        await noise.init({ track });
+        if (cancelled) return;
+        track = noise.processedTrack ?? track;
+        setStatus("");
         ctx = new AudioContext({ sampleRate: 48000, latencyHint: "interactive" });
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 1024;
@@ -178,7 +179,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         <div>
           <Toggle
             title="Эхоподавление"
-            desc="Нужно, только если говоришь через колонки, а не наушники."
+            desc="Не даёт звуку из твоих наушников или колонок вернуться к друзьям через твой микрофон. Выключай, только если точно в закрытых наушниках."
             checked={s.echoCancellation}
             onChange={(v) => apply({ echoCancellation: v })}
           />
@@ -190,9 +191,50 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           />
         </div>
       </div>
+      <AboutRow />
       <div className="foot">
         <button className="btn primary" onClick={onClose}>Готово</button>
       </div>
     </Modal>
+  );
+}
+
+function AboutRow() {
+  const [version, setVersion] = useState("");
+  const update = useUpdater();
+  const v = useVoice();
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => {});
+  }, []);
+
+  const status =
+    update.kind === "checking"
+      ? "Проверяю…"
+      : update.kind === "latest"
+        ? "Это последняя версия"
+        : update.kind === "available"
+          ? update.error
+            ? `Не удалось обновиться: ${update.error}`
+            : `Доступна версия ${update.version}`
+          : update.kind === "installing"
+            ? `Обновляю${update.percent === null ? "…" : ` ${update.percent}%`}`
+            : update.kind === "error"
+              ? `Не удалось проверить: ${update.message}`
+              : "";
+
+  return (
+    <div className="toggle" style={{ borderTop: "1px solid var(--line)", marginTop: 6 }}>
+      <div>
+        <div className="t">Voicy {version && `v${version}`}</div>
+        <div className="d">{status || "Обновления проверяются сами каждые полчаса"}</div>
+      </div>
+      {update.kind === "available" ? (
+        <button className="btn green" onClick={() => confirmAndInstall(v.state !== "idle")}>Обновить</button>
+      ) : (
+        <button className="btn" disabled={update.kind === "checking" || update.kind === "installing"} onClick={() => void checkForUpdate(true)}>
+          Проверить обновления
+        </button>
+      )}
+    </div>
   );
 }

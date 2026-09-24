@@ -101,14 +101,19 @@ export function dfnRealtimeFactor(): Promise<number> {
 /** Above this the audio thread has too little headroom for DeepFilterNet. */
 export const DFN_MAX_REALTIME_FACTOR = 0.5;
 
-type ActiveMode = Exclude<NoiseMode, "off">;
-
+/**
+ * Always on the mic, even with suppression off: besides cleaning noise it
+ * guarantees a mono track. Many headsets and audio interfaces deliver
+ * stereo with the voice in the left channel only, and Chromium sometimes
+ * reopens the mic in stereo, which friends then hear in one ear.
+ */
 export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, AudioProcessorOptions> {
   name = "voicy-noise";
   processedTrack?: MediaStreamTrack;
 
   private ctx: AudioContext | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
+  private mono: GainNode | null = null;
   private dest: MediaStreamAudioDestinationNode | null = null;
   private current: AudioNode | null = null;
   private dfn: DeepFilterNet3Core | null = null;
@@ -116,9 +121,9 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
   private rnnoise: RnnoiseWorkletNode | null = null;
   private track?: MediaStreamTrack;
 
-  constructor(private mode: ActiveMode) {}
+  constructor(private mode: NoiseMode) {}
 
-  get activeMode(): ActiveMode {
+  get activeMode(): NoiseMode {
     return this.mode;
   }
 
@@ -133,17 +138,18 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
     await this.build();
   };
 
-  async setMode(mode: ActiveMode) {
+  async setMode(mode: NoiseMode) {
     this.mode = mode;
     await this.build();
   }
 
   destroy = async () => {
     this.source?.disconnect();
+    this.mono?.disconnect();
     this.current?.disconnect();
     this.rnnoise?.destroy();
     this.dfn?.destroy();
-    this.source = this.current = this.rnnoise = this.dfnNode = this.dfn = null;
+    this.source = this.mono = this.current = this.rnnoise = this.dfnNode = this.dfn = null;
     await this.ctx?.close().catch(() => {});
     this.ctx = null;
   };
@@ -153,14 +159,18 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
     // device rate (often 44.1 kHz) would add resampling.
     if (!this.ctx) {
       this.ctx = new AudioContext({ sampleRate: 48000, latencyHint: "interactive" });
-      this.dest = this.ctx.createMediaStreamDestination();
+      // "discrete" keeps the first channel as is: the voice of a left-only
+      // stereo mic at full level, where averaging would lose 6 dB.
+      this.mono = new GainNode(this.ctx, { channelCount: 1, channelCountMode: "explicit", channelInterpretation: "discrete" });
+      this.dest = new MediaStreamAudioDestinationNode(this.ctx, { channelCount: 1, channelCountMode: "explicit" });
       this.processedTrack = this.dest.stream.getAudioTracks()[0];
     }
     if (this.ctx.state !== "running") await this.ctx.resume().catch(() => {});
     return this.ctx;
   }
 
-  private async nodeFor(ctx: AudioContext, mode: ActiveMode): Promise<AudioNode> {
+  private async nodeFor(ctx: AudioContext, mode: NoiseMode): Promise<AudioNode | null> {
+    if (mode === "off") return null;
     if (mode === "light") {
       if (!this.rnnoise) {
         rnnoiseWasm ??= loadRnnoise({ url: rnnoiseWasmUrl, simdUrl: rnnoiseSimdUrl });
@@ -187,9 +197,12 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
     const ctx = await this.context();
     const node = await this.nodeFor(ctx, this.mode);
     this.source?.disconnect();
+    this.mono!.disconnect();
     this.current?.disconnect();
     this.source = ctx.createMediaStreamSource(new MediaStream([this.track]));
-    this.source.connect(node).connect(this.dest!);
+    this.source.connect(this.mono!);
+    if (node) this.mono!.connect(node).connect(this.dest!);
+    else this.mono!.connect(this.dest!);
     this.current = node;
   }
 }

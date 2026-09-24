@@ -429,7 +429,10 @@ class VoiceSession {
     return this.room?.localParticipant.getTrackPublication(Track.Source.Microphone)?.track as LocalAudioTrack | undefined;
   }
 
-  /** Puts the configured noise suppressor on the mic track, or removes it. */
+  /**
+   * Puts our processor on the mic track in the configured mode. It stays on
+   * with suppression off too, because it also forces the track to mono.
+   */
   private async applyNoise() {
     const track = this.micTrack();
     if (!track) return;
@@ -444,9 +447,7 @@ class VoiceSession {
       }
     }
     try {
-      if (mode === "off") {
-        if (current) await track.stopProcessor();
-      } else if (current instanceof VoicyNoiseProcessor) {
+      if (current instanceof VoicyNoiseProcessor) {
         if (current.activeMode !== mode) await current.setMode(mode);
       } else {
         await track.setProcessor(new VoicyNoiseProcessor(mode));
@@ -454,12 +455,17 @@ class VoiceSession {
       this.set({ noiseError: notice });
     } catch (e) {
       console.error("noise suppression failed", e);
-      // DeepFilterNet is the heavy one; RNNoise is the safe fallback.
-      if (mode !== "light") {
-        await track.stopProcessor().catch(() => {});
-        await track.setProcessor(new VoicyNoiseProcessor("light")).catch(() => {});
-      }
-      this.set({ noiseError: `Шумоподавление «${mode}» не запустилось, включено лёгкое.` });
+      // DeepFilterNet is the heavy one; RNNoise is the safe fallback, and a
+      // plain mono passthrough the last resort.
+      await track.stopProcessor().catch(() => {});
+      const fallback = mode === "standard" || mode === "max" ? "light" : "off";
+      const ok = await track.setProcessor(new VoicyNoiseProcessor(fallback)).then(
+        () => true,
+        () => false,
+      );
+      this.set({
+        noiseError: ok && fallback === "light" ? "DeepFilterNet не запустился, включено лёгкое шумоподавление." : "Шумоподавление не запустилось.",
+      });
     }
   }
 

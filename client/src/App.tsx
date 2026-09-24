@@ -9,7 +9,7 @@ import { Modal } from "./components/ui";
 import { colorFor, initials } from "./components/ui";
 import { getSettings } from "./lib/settings";
 import { errorText, inviteFromClipboard, joinServer, listServers, SavedServer } from "./lib/tauri";
-import { useUpdater } from "./lib/updater";
+import { confirmAndInstall, useUpdater } from "./lib/updater";
 import { useVoice, voice } from "./lib/voice";
 
 type Dialog = { kind: "choose" } | { kind: "join"; link?: string; error?: string } | { kind: "create" } | null;
@@ -116,11 +116,8 @@ export default function App() {
     return () => window.removeEventListener("focus", check);
   }, []);
 
-  const updater = useUpdater();
-  const installUpdate = () => {
-    if (v.state !== "idle" && !confirm("Voicy перезапустится, и звонок прервётся. Обновить сейчас?")) return;
-    void updater.install();
-  };
+  const update = useUpdater();
+  const startUpdate = () => confirmAndInstall(v.state !== "idle");
 
   const current = servers.find((s) => s.host === selected);
 
@@ -144,20 +141,19 @@ export default function App() {
           <Plus size={22} />
         </button>
         <div className="rail-spacer" />
-        {updater.state.kind === "available" && (
-          <button className="rail-btn update" title={`Обновить Voicy до ${updater.state.version}`} onClick={installUpdate}>
+        {update.kind === "available" && (
+          <button
+            className={`rail-btn update${update.error ? " failed" : ""}`}
+            title={update.error ? `Не удалось обновиться: ${update.error}. Нажми, чтобы повторить.` : `Обновить Voicy до ${update.version}`}
+            onClick={startUpdate}
+          >
             <Download size={22} />
           </button>
         )}
-        {updater.state.kind === "installing" && (
+        {update.kind === "installing" && (
           <div className="rail-btn update busy" title="Обновляю…">
-            {updater.state.percent === null ? "…" : `${updater.state.percent}%`}
+            {update.percent === null ? "…" : `${update.percent}%`}
           </div>
-        )}
-        {updater.state.kind === "error" && (
-          <button className="rail-btn update failed" title={`Не удалось обновиться: ${updater.state.message}. Нажми, чтобы повторить.`} onClick={installUpdate}>
-            <Download size={22} />
-          </button>
         )}
       </nav>
 

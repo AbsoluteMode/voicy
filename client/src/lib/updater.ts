@@ -1,61 +1,90 @@
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, Update } from "@tauri-apps/plugin-updater";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 export type UpdateState =
-  | { kind: "none" }
-  | { kind: "available"; version: string }
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "latest" }
+  | { kind: "available"; version: string; error?: string }
   | { kind: "installing"; percent: number | null }
   | { kind: "error"; message: string };
 
 const CHECK_EVERY_MS = 30 * 60 * 1000;
 
+// One store for the rail button and the settings dialog.
+let state: UpdateState = { kind: "idle" };
+let pending: Update | null = null;
+const listeners = new Set<() => void>();
+
+function set(next: UpdateState) {
+  state = next;
+  listeners.forEach((fn) => fn());
+}
+
 /**
- * Polls GitHub releases for a newer, signed build. The updater plugin
+ * Asks GitHub releases for a newer, signed build. The updater plugin
  * verifies the signature against the public key in tauri.conf.json.
+ * `manual` checks report "latest" and errors; background ones stay quiet.
  */
-export function useUpdater() {
-  const [state, setState] = useState<UpdateState>({ kind: "none" });
-  const update = useRef<Update | null>(null);
+export async function checkForUpdate(manual = false) {
+  if (state.kind === "installing" || state.kind === "checking") return;
+  const before = state;
+  if (manual) set({ kind: "checking" });
+  try {
+    const found = await check();
+    if (found) {
+      pending = found;
+      set({ kind: "available", version: found.version });
+    } else {
+      set(manual ? { kind: "latest" } : before.kind === "available" ? before : { kind: "idle" });
+    }
+  } catch (e) {
+    console.warn("update check failed", e);
+    if (manual) set({ kind: "error", message: "нет связи с GitHub" });
+  }
+}
 
-  const poll = useCallback(async () => {
-    try {
-      const found = await check();
-      if (found) {
-        update.current = found;
-        setState((s) => (s.kind === "installing" ? s : { kind: "available", version: found.version }));
+export async function installUpdate() {
+  const update = pending;
+  if (!update) return;
+  let total = 0;
+  let done = 0;
+  set({ kind: "installing", percent: null });
+  try {
+    await update.downloadAndInstall((e) => {
+      if (e.event === "Started") total = e.data.contentLength ?? 0;
+      if (e.event === "Progress") {
+        done += e.data.chunkLength;
+        set({ kind: "installing", percent: total ? Math.round((done / total) * 100) : null });
       }
-    } catch (e) {
-      // Offline or GitHub hiccup: try again next time, quietly.
-      console.warn("update check failed", e);
-    }
-  }, []);
+    });
+    await relaunch();
+  } catch (e) {
+    // Keep the update on offer so the button can retry.
+    set({ kind: "available", version: update.version, error: e instanceof Error ? e.message : String(e) });
+  }
+}
 
-  useEffect(() => {
-    void poll();
-    const t = setInterval(() => void poll(), CHECK_EVERY_MS);
-    return () => clearInterval(t);
-  }, [poll]);
+/** Installing restarts Voicy, so a live call gets a warning first. */
+export function confirmAndInstall(inCall: boolean) {
+  if (inCall && !confirm("Voicy перезапустится, и звонок прервётся. Обновить сейчас?")) return;
+  void installUpdate();
+}
 
-  const install = useCallback(async () => {
-    const u = update.current;
-    if (!u) return;
-    let total = 0;
-    let done = 0;
-    setState({ kind: "installing", percent: null });
-    try {
-      await u.downloadAndInstall((e) => {
-        if (e.event === "Started") total = e.data.contentLength ?? 0;
-        if (e.event === "Progress") {
-          done += e.data.chunkLength;
-          setState({ kind: "installing", percent: total ? Math.round((done / total) * 100) : null });
-        }
-      });
-      await relaunch();
-    } catch (e) {
-      setState({ kind: "error", message: e instanceof Error ? e.message : String(e) });
-    }
-  }, []);
+let started = false;
 
-  return { state, install };
+export function useUpdater(): UpdateState {
+  if (!started) {
+    started = true;
+    void checkForUpdate();
+    setInterval(() => void checkForUpdate(), CHECK_EVERY_MS);
+  }
+  return useSyncExternalStore(
+    (fn) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    () => state,
+  );
 }
