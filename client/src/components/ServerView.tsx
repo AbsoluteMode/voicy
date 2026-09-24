@@ -1,9 +1,11 @@
-import { Circle, LogOut, Maximize2, Pencil, Shield, ShieldOff, Trash2, UserMinus } from "lucide-react";
+import { Circle, ImagePlus, LogOut, Maximize2, Pencil, Search, Shield, ShieldOff, Trash2, Upload, UserMinus } from "lucide-react";
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
 
+import { syncAvatar } from "../lib/avatar";
 import { updateSettings, useSettings } from "../lib/settings";
-import { api, errorCode, errorText, forgetServer, Member, Role, RoomInfo, SavedServer } from "../lib/tauri";
+import { api, avatarUrl, errorCode, errorText, forgetServer, Member, Role, RoomInfo, SavedServer } from "../lib/tauri";
 import { AudioStats, EndReason, NET_BAD, Peer, ScreenShare, useVoice, voice } from "../lib/voice";
+import { AvatarDialog, removeAvatar } from "./AvatarDialog";
 import { DeleteDialog } from "./DeleteDialog";
 import {
   HangUpIcon,
@@ -20,7 +22,7 @@ import {
 } from "./icons";
 import { InviteDialog } from "./InviteDialog";
 import { SettingsDialog } from "./SettingsDialog";
-import { colorFor, initials, Modal, RoleBadge } from "./ui";
+import { Avatar, Modal, RoleBadge } from "./ui";
 
 const RANK: Record<Role, number> = { member: 0, admin: 1, owner: 2 };
 
@@ -123,11 +125,73 @@ function ScreenTile({ screen }: { screen: ScreenShare }) {
 }
 
 /**
+ * Opens under our own row: "change avatar", then a file or Pinterest.
+ * Clicks on the row itself are left to the row, which toggles the menu.
+ */
+function MeMenu({ onClose, onFile, onPinterest }: { onClose: () => void; onFile: (f: File) => void; onPinterest: () => void }) {
+  const s = useSettings();
+  const [choosing, setChoosing] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const file = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const away = (e: MouseEvent) => !ref.current?.parentElement?.contains(e.target as Node) && onClose();
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("mousedown", away);
+    window.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      window.removeEventListener("keydown", esc);
+    };
+  }, [onClose]);
+  return (
+    <div className="menu-pop me-pop" ref={ref} onClick={(e) => e.stopPropagation()}>
+      {!choosing ? (
+        <button onClick={() => setChoosing(true)}>
+          <ImagePlus size={16} /> Изменить аватар
+        </button>
+      ) : (
+        <>
+          <button onClick={() => file.current?.click()}>
+            <Upload size={16} /> Загрузить картинку
+          </button>
+          <button onClick={onPinterest}>
+            <Search size={16} /> Найти на Pinterest
+          </button>
+          {s.avatar && (
+            <button
+              className="danger"
+              onClick={() => {
+                removeAvatar();
+                onClose();
+              }}
+            >
+              <Trash2 size={16} /> Убрать аватар
+            </button>
+          )}
+        </>
+      )}
+      <input
+        ref={file}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) onFile(f);
+        }}
+      />
+    </div>
+  );
+}
+
+/**
  * One person in the call. Volume lives under the mouse wheel (right click
  * resets it) and is only shown when it is not 100% or while changing it.
- * Network numbers appear only when the connection is audibly bad.
+ * Network numbers appear only when the connection is audibly bad. Our own
+ * row opens the avatar menu (`children`) on click.
  */
-function PeerRow({ peer, actions }: { peer: Peer; actions?: ReactNode }) {
+function PeerRow(props: { peer: Peer; avatar: string | null; actions?: ReactNode; onClick?: () => void; children?: ReactNode }) {
+  const { peer, actions } = props;
   const level = useVoiceLevel<HTMLDivElement>(peer.identity);
   const settings = useSettings();
   const volume = settings.volumes[peer.identity] ?? 1;
@@ -153,18 +217,18 @@ function PeerRow({ peer, actions }: { peer: Peer; actions?: ReactNode }) {
 
   return (
     <div
-      className="prow"
+      ref={level}
+      className={`prow${props.onClick ? " self" : ""}`}
+      onClick={props.onClick}
       onWheel={onWheel}
       onContextMenu={(e) => {
         if (peer.isLocal) return;
         e.preventDefault();
         setVolume(1);
       }}
-      title={peer.isLocal ? undefined : `Громкость ${Math.round(volume * 100)}% · колесо мыши — изменить, правый клик — сбросить`}
+      title={peer.isLocal ? (props.onClick ? "Нажми, чтобы сменить аватар" : undefined) : `Громкость ${Math.round(volume * 100)}% · колесо мыши — изменить, правый клик — сбросить`}
     >
-      <div ref={level} className={`av${peer.speaking ? " speaking" : ""}`} style={{ background: colorFor(peer.identity) }}>
-        {initials(peer.name)}
-      </div>
+      <Avatar className={`av${peer.speaking ? " speaking" : ""}`} id={peer.identity} name={peer.name} src={props.avatar} />
       <div className="who">
         <div className="name">
           {peer.name}
@@ -195,6 +259,7 @@ function PeerRow({ peer, actions }: { peer: Peer; actions?: ReactNode }) {
       ) : (
         <Level identity={peer.identity} />
       )}
+      {props.children}
     </div>
   );
 }
@@ -207,7 +272,11 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
   const [role, setRole] = useState<Role>(server.role);
   const [name, setName] = useState(server.name);
   const [fatal, setFatal] = useState<"unauthorized" | "gone" | null>(null);
-  const [dialog, setDialog] = useState<null | "invite" | "settings" | "delete" | "rename">(null);
+  const [dialog, setDialog] = useState<null | "invite" | "settings" | "delete" | "rename" | "avatar">(null);
+  const [meMenu, setMeMenu] = useState(false);
+  const closeMeMenu = useCallback(() => setMeMenu(false), []);
+  // Set when the avatar comes from disk: the dialog starts at framing it.
+  const [avatarFile, setAvatarFile] = useState<File>();
   const [menu, setMenu] = useState(false);
   const [error, setError] = useState("");
   const [shareBusy, setShareBusy] = useState(false);
@@ -226,7 +295,8 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
         api<{ name: string }>(server.host, "GET", "/api/info"),
       ]);
       setRole(me.role);
-      setMembers(list);
+      // A picture chosen while this server was offline, or on first visit.
+      setMembers((await syncAvatar(server.host, me)) ? await api<Member[]>(server.host, "GET", "/api/members") : list);
       setName(info.name);
       // The backend refreshed its cache from these; update the sidebar.
       if (me.role !== server.role || me.nickname !== server.nickname || info.name !== server.name) onChanged();
@@ -258,6 +328,13 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
   }, [loadMembers]);
 
   const byId = useMemo(() => new Map(members.map((m) => [m.id, m])), [members]);
+  const settings = useSettings();
+  // Our own picture shows from here right away; everyone else's from the server.
+  const avatarFor = (id: string) => {
+    if (id === server.member_id && settings.avatar !== undefined) return settings.avatar?.url ?? null;
+    const version = byId.get(id)?.avatar;
+    return version ? avatarUrl(server.host, id, version) : null;
+  };
 
   useEffect(() => {
     if (!here || !v.endReason) return;
@@ -443,13 +520,17 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
                       <PeerRow
                         key={p.identity}
                         peer={{ ...p, role: m?.role ?? p.role }}
+                        avatar={avatarFor(p.identity)}
                         actions={m && canManage(m) ? memberActions(m) : undefined}
-                      />
+                        onClick={p.isLocal ? () => setMeMenu(!meMenu) : undefined}
+                      >
+                        {p.isLocal && meMenu && meMenuPop()}
+                      </PeerRow>
                     );
                   })
                 : r.participants.map((p) => (
                     <div className="mrow" key={p.id}>
-                      <div className="av off" style={{ background: colorFor(p.id) }}>{initials(p.name)}</div>
+                      <Avatar className="av off" id={p.id} name={p.name} src={avatarFor(p.id)} />
                       <div className="name">{p.name}</div>
                       <RoleBadge role={byId.get(p.id)?.role} />
                     </div>
@@ -461,17 +542,26 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
         {away.length > 0 && (
           <>
             <div className="sec-label" style={{ marginTop: 6 }}>Не в голосе · {away.length}</div>
-            {away.map((m) => (
-              <div className="mrow" key={m.id}>
-                <div className="av off">{initials(m.nickname)}</div>
+            {away.map((m) => {
+              const self = m.id === server.member_id;
+              return (
+              <div
+                className={`mrow${self ? " self" : ""}`}
+                key={m.id}
+                onClick={self ? () => setMeMenu(!meMenu) : undefined}
+                title={self ? "Нажми, чтобы сменить аватар" : undefined}
+              >
+                <Avatar className="av off" id={m.id} name={m.nickname} src={avatarFor(m.id)} plain />
                 <div className="name">
                   {m.nickname}
                   {m.id === server.member_id && <span style={{ color: "var(--faint)" }}> · ты</span>}
                 </div>
                 {canManage(m) && memberActions(m)}
                 <RoleBadge role={m.role} />
+                {self && meMenu && meMenuPop()}
               </div>
-            ))}
+              );
+            })}
           </>
         )}
       </section>
@@ -527,6 +617,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
 
       {dialog === "invite" && <InviteDialog host={server.host} onClose={() => setDialog(null)} />}
       {dialog === "settings" && <SettingsDialog onClose={() => setDialog(null)} />}
+      {dialog === "avatar" && <AvatarDialog file={avatarFile} onClose={() => setDialog(null)} />}
       {dialog === "delete" && <DeleteDialog server={server} onClose={() => setDialog(null)} onDeleted={forget} />}
       {dialog === "rename" && (
         <RenameDialog
@@ -542,6 +633,15 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
       )}
     </div>
   );
+
+  function meMenuPop() {
+    const open = (file?: File) => {
+      setMeMenu(false);
+      setAvatarFile(file);
+      setDialog("avatar");
+    };
+    return <MeMenu onClose={closeMeMenu} onFile={open} onPinterest={() => open()} />;
+  }
 
   function memberActions(m: Member) {
     return (

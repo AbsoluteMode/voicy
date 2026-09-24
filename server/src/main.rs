@@ -1,5 +1,6 @@
 mod api;
 mod auth;
+mod avatar;
 mod db;
 mod error;
 mod invite_page;

@@ -15,6 +15,8 @@ export interface Member {
   nickname: string;
   role: Role;
   created_at: number;
+  /** Picture version, see `avatarUrl`; null when there is none. */
+  avatar?: string | null;
 }
 
 /** A voice room from `/api/rooms`: all occupied rooms plus one empty. */
@@ -85,7 +87,7 @@ export const osUsername = () => invoke<string | null>("os_username");
 export const saveRecording = (name: string, wav: Uint8Array, stats: string) =>
   invoke<string>("save_recording", { name, wav: Array.from(wav), stats });
 
-export function api<T>(host: string, method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown) {
+export function api<T>(host: string, method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown) {
   return invoke<T>("api_request", { host, method, path, body: body ?? null });
 }
 
@@ -105,3 +107,17 @@ export function deployServer(
 export function uninstallServer(ssh: SshCreds, onLog: (line: string) => void) {
   return invoke<void>("uninstall_server", { ssh, onLog: logChannel(onLog) });
 }
+
+/** Members' pictures are public by id, so a plain `<img>` can show them. */
+export const avatarUrl = (host: string, memberId: string, version: string) =>
+  `https://${host}/api/avatars/${encodeURIComponent(memberId)}?v=${encodeURIComponent(version)}`;
+
+export interface Pin {
+  id: string;
+  thumb: string;
+  full: string;
+}
+
+export const pinterestSearch = (query: string, bookmark?: string | null) =>
+  invoke<{ pins: Pin[]; bookmark: string | null }>("pinterest_search", { query, bookmark: bookmark ?? null });
+export const pinterestImage = (url: string) => invoke<ArrayBuffer>("pinterest_image", { url });
