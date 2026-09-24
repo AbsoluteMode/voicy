@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Noise-suppression models, fetched by scripts/fetch-ns-assets.mjs
+public/ns/

@@ -1,11 +1,13 @@
 import { useSyncExternalStore } from "react";
 
+import type { NoiseMode } from "./noise";
+
 export interface AudioSettings {
   inputDevice: string;
   outputDevice: string;
   /** Opus target, kbit/s. */
   bitrate: number;
-  noiseSuppression: boolean;
+  noise: NoiseMode;
   echoCancellation: boolean;
   autoGainControl: boolean;
   /** Per-member playback volume, 0..2, keyed by member id. */
@@ -19,7 +21,7 @@ const DEFAULTS: AudioSettings = {
   inputDevice: "",
   outputDevice: "",
   bitrate: 128,
-  noiseSuppression: false,
+  noise: "off",
   echoCancellation: false,
   autoGainControl: false,
   volumes: {},
@@ -34,7 +36,12 @@ const listeners = new Set<() => void>();
 function read(): AudioSettings {
   try {
     const raw = localStorage.getItem(KEY);
-    return raw ? { ...DEFAULTS, ...JSON.parse(raw) } : DEFAULTS;
+    if (!raw) return DEFAULTS;
+    const saved = JSON.parse(raw);
+    // 0.1.0 had an on/off switch for Chromium's own suppression.
+    if (typeof saved.noiseSuppression === "boolean" && !saved.noise) saved.noise = saved.noiseSuppression ? "standard" : "off";
+    delete saved.noiseSuppression;
+    return { ...DEFAULTS, ...saved };
   } catch {
     return DEFAULTS;
   }

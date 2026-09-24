@@ -12,6 +12,7 @@ import {
   TrackPublishOptions,
 } from "livekit-client";
 
+import { DFN_MAX_REALTIME_FACTOR, dfnRealtimeFactor, VoicyNoiseProcessor } from "./noise";
 import { getSettings } from "./settings";
 import { api, Role } from "./tauri";
 
@@ -37,6 +38,8 @@ export interface VoiceSnapshot {
   deafened: boolean;
   /** WebView blocked autoplay; a click must call `startAudio`. */
   audioBlocked: boolean;
+  /** Set when the chosen noise suppression could not start. */
+  noiseError?: string;
   endReason?: EndReason;
   error?: string;
 }
@@ -48,7 +51,9 @@ function captureOptions(): AudioCaptureOptions {
   return {
     deviceId: s.inputDevice || undefined,
     echoCancellation: s.echoCancellation,
-    noiseSuppression: s.noiseSuppression,
+    // Our own suppressor runs after capture; stacking Chromium's on top
+    // only adds artifacts.
+    noiseSuppression: false,
     autoGainControl: s.autoGainControl,
     channelCount: 1,
     sampleRate: 48000,
@@ -183,6 +188,7 @@ class VoiceSession {
       await room.connect(url, token, { autoSubscribe: true });
       this.set({ state: "connected" });
       await room.localParticipant.setMicrophoneEnabled(this.micWanted);
+      await this.applyNoise();
       this.refresh();
     } catch (e) {
       this.teardown();
@@ -211,7 +217,47 @@ class VoiceSession {
     this.micWanted = !muted;
     this.set({ micMuted: muted });
     await this.room?.localParticipant.setMicrophoneEnabled(!muted);
+    // The first unmute of a session creates the track.
+    if (!muted) await this.applyNoise();
     this.refresh();
+  }
+
+  private micTrack(): LocalAudioTrack | undefined {
+    return this.room?.localParticipant.getTrackPublication(Track.Source.Microphone)?.track as LocalAudioTrack | undefined;
+  }
+
+  /** Puts the configured noise suppressor on the mic track, or removes it. */
+  private async applyNoise() {
+    const track = this.micTrack();
+    if (!track) return;
+    let mode = getSettings().noise;
+    const current = track.getProcessor();
+    let notice: string | undefined;
+    if (mode === "standard" || mode === "max") {
+      const rtf = await dfnRealtimeFactor().catch(() => Infinity);
+      if (rtf > DFN_MAX_REALTIME_FACTOR) {
+        mode = "light";
+        notice = "Процессор не тянет DeepFilterNet без треска, включено лёгкое шумоподавление.";
+      }
+    }
+    try {
+      if (mode === "off") {
+        if (current) await track.stopProcessor();
+      } else if (current instanceof VoicyNoiseProcessor) {
+        if (current.activeMode !== mode) await current.setMode(mode);
+      } else {
+        await track.setProcessor(new VoicyNoiseProcessor(mode));
+      }
+      this.set({ noiseError: notice });
+    } catch (e) {
+      console.error("noise suppression failed", e);
+      // DeepFilterNet is the heavy one; RNNoise is the safe fallback.
+      if (mode !== "light") {
+        await track.stopProcessor().catch(() => {});
+        await track.setProcessor(new VoicyNoiseProcessor("light")).catch(() => {});
+      }
+      this.set({ noiseError: `Шумоподавление «${mode}» не запустилось, включено лёгкое.` });
+    }
   }
 
   /** Deafen also mutes the mic, and undeafen restores what it was. */
@@ -254,6 +300,7 @@ class VoiceSession {
     } else {
       await track.restartTrack(captureOptions());
     }
+    await this.applyNoise();
     this.refresh();
   }
 

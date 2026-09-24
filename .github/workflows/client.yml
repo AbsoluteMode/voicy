@@ -54,4 +54,6 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" client/Voicy-Setup.exe --title "Voicy $GITHUB_REF_NAME" --generate-notes
+        run: |
+          gh release upload "$GITHUB_REF_NAME" client/Voicy-Setup.exe --clobber \
+            || gh release create "$GITHUB_REF_NAME" client/Voicy-Setup.exe --title "Voicy $GITHUB_REF_NAME" --generate-notes
