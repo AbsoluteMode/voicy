@@ -101,9 +101,13 @@ button { font: inherit; color: inherit; }
 .avatar {
   width: 72px; height: 72px; border-radius: 50%; display: grid; place-items: center;
   font-size: 26px; font-weight: 650; color: #fff;
-  box-shadow: 0 0 0 3px transparent; transition: box-shadow .12s;
+  box-shadow: 0 0 0 3px transparent; transition: box-shadow .08s linear;
 }
-.peer.speaking .avatar { box-shadow: 0 0 0 3px var(--speak), 0 0 22px rgba(46, 229, 157, .45); }
+/* --level (0..1) is the voice loudness, set from voice.ts 20 times a second. */
+.peer.speaking .avatar {
+  box-shadow: 0 0 0 calc(2px + 5px * var(--level, 0)) var(--speak),
+    0 0 calc(8px + 26px * var(--level, 0)) rgba(46, 229, 157, calc(.25 + .5 * var(--level, 0)));
+}
 .peer-name { font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .peer-meta { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; min-height: 18px; }
 .peer .vol { width: 100%; }
@@ -243,7 +247,7 @@ input[type=range] { accent-color: var(--accent); }
 .room-head small { margin-left: auto; color: var(--faint); font-weight: 400; }
 .room.mine .room-head { color: var(--speak); cursor: default; }
 .room-peer { display: flex; align-items: center; gap: 8px; padding: 3px 8px 3px 30px; font-size: 13px; color: var(--muted); }
-.room-peer .mini { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 9px; font-weight: 700; color: #fff; box-shadow: 0 0 0 2px transparent; }
+.room-peer .mini { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 9px; font-weight: 700; color: #fff; box-shadow: 0 0 0 2px transparent; transition: box-shadow .08s linear; }
 .room-peer.speaking { color: var(--text); }
-.room-peer.speaking .mini { box-shadow: 0 0 0 2px var(--speak); }
+.room-peer.speaking .mini { box-shadow: 0 0 0 calc(1.5px + 2.5px * var(--level, 0)) var(--speak); }
 .btn.hotkey { min-width: 150px; font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; }

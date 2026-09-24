@@ -25,7 +25,10 @@ turned on.
 
 ## Screen sharing
 
-Connected members can share a display or an application window at 720p, 1080p, 1440p (2K), or 2160p (4K), targeting 30 fps. The Windows source picker makes the final selection. Optional screen audio is published when WebView2 provides an audio track for the selected source; the client shows a notice if it starts video without audio.
+One button, then the system picker chooses a screen or a window and whether to share system audio (Windows
+gives sound only for a whole screen). The stream goes out at 1080p30 with 720p and 360p simulcast copies, so each
+viewer gets what fits their connection and the size of the stream on their screen, and unwatched layers are not
+encoded. Shared sound is stereo and leaves out everything voicy itself plays, so nobody hears the room echoed back.
 
 ## Layout
 

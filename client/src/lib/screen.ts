@@ -1,32 +1,31 @@
-import type { ScreenShareCaptureOptions, TrackPublishOptions } from "livekit-client";
+import { ScreenSharePresets, type ScreenShareCaptureOptions, type TrackPublishOptions } from "livekit-client";
 
-export const SCREEN_QUALITIES = {
-  "720p": { width: 1280, height: 720, bitrate: 3_000_000 },
-  "1080p": { width: 1920, height: 1080, bitrate: 5_000_000 },
-  "2K": { width: 2560, height: 1440, bitrate: 10_000_000 },
-  "4K": { width: 3840, height: 2160, bitrate: 18_000_000 },
-} as const;
+/**
+ * Sound is always requested: the system picker has its own "share system
+ * audio" switch, so the choice stays there. restrictOwnAudio captures
+ * through "loopbackWithoutChrome", which leaves out everything this WebView
+ * plays, so viewers never hear the room echoed back.
+ */
+export const SCREEN_CAPTURE: ScreenShareCaptureOptions = {
+  audio: { restrictOwnAudio: true, channelCount: 2, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+  systemAudio: "include",
+  contentHint: "detail",
+  resolution: ScreenSharePresets.h1080fps30.resolution,
+};
 
-export type ScreenQuality = keyof typeof SCREEN_QUALITIES;
-export type ScreenSource = "monitor" | "window";
-
-export function screenOptions(quality: ScreenQuality, source: ScreenSource, audio: boolean): {
-  capture: ScreenShareCaptureOptions;
-  publish: TrackPublishOptions;
-} {
-  const { width, height, bitrate } = SCREEN_QUALITIES[quality];
-  return {
-    capture: {
-      audio: audio ? { restrictOwnAudio: true, echoCancellation: false, noiseSuppression: false, autoGainControl: false } : false,
-      systemAudio: audio ? "include" : "exclude",
-      video: { displaySurface: source },
-      contentHint: "detail",
-      resolution: { width, height, frameRate: 30 },
-    },
-    publish: {
-      screenShareEncoding: { maxBitrate: bitrate, maxFramerate: 30 },
-      simulcast: false,
-      degradationPreference: "maintain-resolution",
-    },
-  };
-}
+/**
+ * 1080p30 plus 720p and 360p copies. Each viewer gets the one that fits their
+ * connection and how large the stream is on their screen, and layers nobody
+ * watches are not encoded at all (dynacast).
+ */
+export const SCREEN_PUBLISH: TrackPublishOptions = {
+  videoCodec: "vp8",
+  backupCodec: false,
+  simulcast: true,
+  screenShareEncoding: { maxBitrate: 6_000_000, maxFramerate: 30 },
+  screenShareSimulcastLayers: [ScreenSharePresets.h360fps15, ScreenSharePresets.h720fps30],
+  // Text stays sharp; when the CPU or network is short, frames drop instead.
+  degradationPreference: "maintain-resolution",
+  // Stereo Opus, loud enough for music and games whatever the voice setting.
+  audioPreset: { maxBitrate: 128_000 },
+};
