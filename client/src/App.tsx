@@ -1,5 +1,5 @@
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { Plus } from "lucide-react";
+import { Download, Plus } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { CreateDialog } from "./components/CreateDialog";
@@ -9,6 +9,7 @@ import { Modal } from "./components/ui";
 import { colorFor, initials } from "./components/ui";
 import { getSettings } from "./lib/settings";
 import { errorText, inviteFromClipboard, joinServer, listServers, SavedServer } from "./lib/tauri";
+import { useUpdater } from "./lib/updater";
 import { useVoice, voice } from "./lib/voice";
 
 type Dialog = { kind: "choose" } | { kind: "join"; link?: string; error?: string } | { kind: "create" } | null;
@@ -88,6 +89,12 @@ export default function App() {
     return () => window.removeEventListener("focus", check);
   }, []);
 
+  const updater = useUpdater();
+  const installUpdate = () => {
+    if (v.state !== "idle" && !confirm("Voicy перезапустится, и звонок прервётся. Обновить сейчас?")) return;
+    void updater.install();
+  };
+
   const current = servers.find((s) => s.host === selected);
 
   return (
@@ -109,6 +116,22 @@ export default function App() {
         <button className="rail-btn add" title="Добавить сервер" onClick={() => setDialog({ kind: "choose" })}>
           <Plus size={22} />
         </button>
+        <div className="rail-spacer" />
+        {updater.state.kind === "available" && (
+          <button className="rail-btn update" title={`Обновить Voicy до ${updater.state.version}`} onClick={installUpdate}>
+            <Download size={22} />
+          </button>
+        )}
+        {updater.state.kind === "installing" && (
+          <div className="rail-btn update busy" title="Обновляю…">
+            {updater.state.percent === null ? "…" : `${updater.state.percent}%`}
+          </div>
+        )}
+        {updater.state.kind === "error" && (
+          <button className="rail-btn update failed" title={`Не удалось обновиться: ${updater.state.message}. Нажми, чтобы повторить.`} onClick={installUpdate}>
+            <Download size={22} />
+          </button>
+        )}
       </nav>
 
       <main className="main">

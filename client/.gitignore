@@ -25,3 +25,6 @@ dist-ssr
 
 # Noise-suppression models, fetched by scripts/fetch-ns-assets.mjs
 public/ns/
+
+# Release assets, built by scripts/release-files.mjs
+release/

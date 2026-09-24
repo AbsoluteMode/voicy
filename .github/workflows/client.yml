@@ -38,22 +38,27 @@ jobs:
       - name: Build installer
         working-directory: client
         shell: bash
+        env:
+          # Signs the update artifacts the in-app updater verifies.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           npm ci
           npx tsc --noEmit
           npm run tauri build
-          cp src-tauri/target/release/bundle/nsis/*-setup.exe Voicy-Setup.exe
+          npm run release-files
       - uses: actions/upload-artifact@v4
         with:
           name: Voicy-Setup
-          path: client/Voicy-Setup.exe
-      # Invite pages link to releases/latest/download/Voicy-Setup.exe, so the
-      # asset name must stay fixed.
+          path: client/release/
+      # Invite pages link to releases/latest/download/Voicy-Setup.exe and the
+      # updater polls releases/latest/download/latest.json: names are fixed.
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "$GITHUB_REF_NAME" client/Voicy-Setup.exe --clobber \
-            || gh release create "$GITHUB_REF_NAME" client/Voicy-Setup.exe --title "Voicy $GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" client/release/Voicy-Setup.exe client/release/latest.json --clobber \
+            || gh release create "$GITHUB_REF_NAME" client/release/Voicy-Setup.exe client/release/latest.json \
+                 --title "Voicy $GITHUB_REF_NAME" --generate-notes
