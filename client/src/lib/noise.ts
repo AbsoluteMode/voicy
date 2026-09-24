@@ -17,6 +17,8 @@ import rnnoiseSimdUrl from "@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?u
 import { AssetLoader, DeepFilterNet3Core } from "deepfilternet3-noise-filter";
 import type { AudioProcessorOptions, Track, TrackProcessor } from "livekit-client";
 
+import { log } from "./log";
+
 /** `light` (RNNoise + gate) is only a fallback, not offered in settings. */
 export type NoiseMode = "off" | "soft" | "standard" | "max" | "light";
 
@@ -212,6 +214,10 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
     return this.mode;
   }
 
+  get contextState(): string | undefined {
+    return this.ctx?.state;
+  }
+
   init = async (opts: { track: MediaStreamTrack }) => {
     this.track = opts.track;
     await this.build();
@@ -250,6 +256,16 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
       this.mono = new GainNode(this.ctx, { channelCount: 1, channelCountMode: "explicit", channelInterpretation: "discrete" });
       this.dest = new MediaStreamAudioDestinationNode(this.ctx, { channelCount: 1, channelCountMode: "explicit" });
       this.processedTrack = this.dest.stream.getAudioTracks()[0];
+      watchTrack(this.processedTrack, "ns-out");
+      const ctx = this.ctx;
+      // Windows can suspend a context (device switch, audio service
+      // restart); a suspended one sends silence without any mute showing.
+      ctx.onstatechange = () => {
+        log("ns-ctx", { state: ctx.state });
+        if (ctx.state !== "running" && ctx.state !== "closed" && this.ctx === ctx) {
+          setTimeout(() => void ctx.resume().then(() => log("ns-ctx-resumed", { state: ctx.state }), (e) => log("ns-ctx-resume-failed", { err: String(e) })), 200);
+        }
+      };
     }
     if (this.ctx.state !== "running") await this.ctx.resume().catch(() => {});
     return this.ctx;
@@ -289,6 +305,8 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
 
   private async build() {
     if (!this.track) throw new Error("no source track");
+    watchTrack(this.track, "mic-raw");
+    log("ns-build", { mode: this.mode, label: this.track.label, settings: this.track.getSettings() });
     const ctx = await this.context();
     const node = await this.nodeFor(ctx, this.mode);
     const gate = this.mode === "off" ? null : await this.gateFor(ctx);
@@ -305,5 +323,16 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
     }
     tail.connect(this.dest!);
     this.current = node;
+  }
+}
+
+const watched = new WeakSet<MediaStreamTrack>();
+
+/** Logs what the browser or Windows does to a track behind our back. */
+export function watchTrack(track: MediaStreamTrack, what: string) {
+  if (watched.has(track)) return;
+  watched.add(track);
+  for (const ev of ["mute", "unmute", "ended"]) {
+    track.addEventListener(ev, () => log(`${what}-${ev}`, { label: track.label, state: track.readyState, enabled: track.enabled, muted: track.muted }));
   }
 }

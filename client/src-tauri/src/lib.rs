@@ -65,30 +65,6 @@ async fn invite_info(link: String) -> CmdResult<Value> {
     Ok(info)
 }
 
-/// Writes a diagnostic recording to the user's Downloads folder and returns
-/// the path.
-#[tauri::command]
-fn save_recording(name: String, wav: Vec<u8>, stats: String) -> CmdResult<String> {
-    let safe: String = name
-        .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
-        .take(40)
-        .collect();
-    let dir = std::env::var_os("USERPROFILE")
-        .map(|h| std::path::PathBuf::from(h).join("Downloads"))
-        .filter(|d| d.is_dir())
-        .ok_or_else(|| CmdError::new("other", "не нашёл папку «Загрузки»"))?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default();
-    let base = dir.join(format!("voicy-{safe}-{stamp}"));
-    let wav_path = base.with_extension("wav");
-    std::fs::write(&wav_path, wav).map_err(|e| CmdError::new("other", e.to_string()))?;
-    std::fs::write(base.with_extension("json"), stats).map_err(|e| CmdError::new("other", e.to_string()))?;
-    Ok(wav_path.to_string_lossy().into_owned())
-}
-
 /// Replaces the global hotkey bindings; returns actions that did not parse.
 #[tauri::command]
 fn set_hotkeys(hk: tauri::State<hotkeys::Hotkeys>, bindings: std::collections::HashMap<String, Option<String>>) -> Vec<String> {
@@ -305,7 +281,6 @@ pub fn run() {
             invite_from_clipboard,
             invite_info,
             os_username,
-            save_recording,
             set_hotkeys,
             pinterest_search,
             pinterest_image,

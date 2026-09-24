@@ -205,6 +205,25 @@ impl LiveKit {
         Ok(())
     }
 
+    /// Reliable data message from the server to one participant. Members
+    /// cannot publish data, so clients can trust whatever arrives this way.
+    pub async fn send_data(&self, room: &str, identity: &str, topic: &str, payload: &Value) -> Result<()> {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        self.room_service(
+            "SendData",
+            room,
+            json!({
+                "room": room,
+                "data": STANDARD.encode(payload.to_string()),
+                "kind": "RELIABLE",
+                "destination_identities": [identity],
+                "topic": topic,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn delete_room(&self, room: &str) -> Result<()> {
         self.room_service("DeleteRoom", room, json!({ "room": room })).await?;
         Ok(())

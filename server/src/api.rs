@@ -36,10 +36,12 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/members", get(members))
         .route("/api/members/{id}/kick", post(kick))
         .route("/api/members/{id}/role", post(set_role))
+        .route("/api/members/{id}/move", post(move_member))
         .route("/api/invites", get(list_invites).post(create_invite))
         .route("/api/invites/{id}", delete(revoke_invite))
         .route("/api/server", delete(delete_server).patch(rename_server))
         .route("/api/rtc-auth", get(rtc_auth))
+        .route("/api/logs", post(client_logs))
         .route("/join/{code}", get(crate::invite_page::page))
         .with_state(state)
 }
@@ -263,6 +265,89 @@ async fn kick(
     tracing::info!("{} kicked {}", auth.0.nickname, target.nickname);
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[derive(Deserialize)]
+struct LogsReq {
+    #[serde(default)]
+    version: String,
+    entries: Vec<Value>,
+}
+
+/// Per-member diagnostic log files are rotated at this size.
+const LOG_FILE_MAX: u64 = 4 << 20;
+const LOG_BATCH_MAX: usize = 500;
+const LOG_ENTRY_MAX: usize = 4096;
+
+/// Apps send what happened to their mic and connection, so problems like
+/// "my mic keeps cutting out" can be read afterwards on the server:
+/// `logs/<member id>.log` next to the database, one JSON object per line.
+async fn client_logs(
+    State(s): State<SharedState>,
+    AuthMember(m): AuthMember,
+    Json(req): Json<LogsReq>,
+) -> ApiResult<StatusCode> {
+    if req.entries.len() > LOG_BATCH_MAX {
+        return Err(ApiError::BadRequest("too many log entries"));
+    }
+    let dir = std::path::Path::new(&s.cfg.db_path).with_file_name("logs");
+    let version: String = req.version.chars().take(32).collect();
+    let mut out = String::new();
+    for entry in req.entries {
+        let line = json!({ "at": now(), "who": m.nickname, "v": version, "e": entry }).to_string();
+        if line.len() <= LOG_ENTRY_MAX {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+    let path = dir.join(format!("{}.log", m.id));
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        use std::io::Write;
+        std::fs::create_dir_all(&dir)?;
+        if std::fs::metadata(&path).map(|md| md.len() > LOG_FILE_MAX).unwrap_or(false) {
+            std::fs::rename(&path, path.with_extension("old.log"))?;
+        }
+        std::fs::OpenOptions::new().create(true).append(true).open(&path)?.write_all(out.as_bytes())
+    })
+    .await??;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct MoveReq {
+    room: String,
+}
+
+/// Drags someone into another voice room. The server only tells their app
+/// where to go; the app reconnects there with its own token.
+async fn move_member(
+    State(s): State<SharedState>,
+    auth: AuthMember,
+    Path(id): Path<String>,
+    Json(req): Json<MoveReq>,
+) -> ApiResult<StatusCode> {
+    auth.require(Role::Admin)?;
+    let to = parse_room(&req.room).ok_or(ApiError::BadRequest("unknown room"))?;
+    let target = s.db.member(&id)?.ok_or(ApiError::NotFound)?;
+    let rooms = live_rooms(&s).await?;
+    let from = rooms
+        .iter()
+        .find(|(_, peers)| peers.iter().any(|p| p.id == target.id))
+        .map(|(n, _)| *n)
+        .ok_or(ApiError::BadRequest("not in voice"))?;
+    if from == to {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    if rooms.get(&to).map_or(0, Vec::len) >= MAX_PEERS {
+        return Err(ApiError::BadRequest("room is full"));
+    }
+    s.lk.send_data(&room_id(from), &target.id, MOVE_TOPIC, &json!({ "room": room_id(to) })).await?;
+    tracing::info!("{} moved {} to {}", auth.0.nickname, target.nickname, room_id(to));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Must match LiveKit's `max_participants` in livekit.yaml.
+const MAX_PEERS: usize = 10;
+const MOVE_TOPIC: &str = "voicy.move";
 
 #[derive(Deserialize)]
 struct SetRoleReq {

@@ -19,8 +19,8 @@ export async function applyHotkeys(): Promise<HotkeyErrors> {
   if (!listening) {
     listening = true;
     await listen<{ action: keyof Hotkeys; pressed: boolean }>("hotkey", ({ payload }) => {
-      if (payload.action === "mute" && payload.pressed) void voice.toggleMic();
-      if (payload.action === "deafen" && payload.pressed) void voice.toggleDeafen();
+      if (payload.action === "mute" && payload.pressed) void voice.toggleMic("hotkey");
+      if (payload.action === "deafen" && payload.pressed) void voice.toggleDeafen("hotkey");
       if (payload.action === "ptt") void voice.pushToTalk(payload.pressed);
     });
   }

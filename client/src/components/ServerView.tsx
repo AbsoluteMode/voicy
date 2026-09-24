@@ -1,10 +1,10 @@
-import { Circle, ImagePlus, LogOut, Maximize2, Pencil, Search, Shield, ShieldOff, Trash2, Upload, UserMinus } from "lucide-react";
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
+import { ImagePlus, LogOut, Maximize2, Pencil, Search, Shield, ShieldOff, Trash2, Upload, UserMinus } from "lucide-react";
+import { FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
 
 import { syncAvatar } from "../lib/avatar";
 import { updateSettings, useSettings } from "../lib/settings";
 import { api, avatarUrl, errorCode, errorText, forgetServer, Member, Role, RoomInfo, SavedServer } from "../lib/tauri";
-import { AudioStats, EndReason, NET_BAD, Peer, ScreenShare, useVoice, voice } from "../lib/voice";
+import { EndReason, Peer, ScreenShare, useVoice, voice } from "../lib/voice";
 import { AvatarDialog, removeAvatar } from "./AvatarDialog";
 import { DeleteDialog } from "./DeleteDialog";
 import {
@@ -18,7 +18,6 @@ import {
   PlusIcon,
   ScreenIcon,
   SlidersIcon,
-  WeakSignalIcon,
 } from "./icons";
 import { InviteDialog } from "./InviteDialog";
 import { SettingsDialog } from "./SettingsDialog";
@@ -34,17 +33,22 @@ const END_TEXT: Record<EndReason, string> = {
   full: "В комнате уже максимум участников (10).",
 };
 
-function statsTitle(s?: AudioStats) {
-  if (!s) return "";
-  return [
-    s.sendKbps !== undefined && `${s.sendKbps} кбит/с`,
-    s.rttMs !== undefined && `пинг ${s.rttMs} мс`,
-    s.lossPct !== undefined && `потери ${s.lossPct}%`,
-    s.jitterMs !== undefined && `джиттер ${s.jitterMs} мс`,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+const BARS_TITLE = ["Подключаюсь…", "Плохая связь", "Связь так себе", "Хорошая связь"];
+
+/** Connection bars next to a name: 1 red, 2 yellow, 3 green. */
+function SignalBars({ q }: { q: Peer["quality"] }) {
+  return (
+    <span className={`bars q${q}`} title={BARS_TITLE[q]} aria-label={BARS_TITLE[q]}>
+      <i />
+      <i />
+      <i />
+    </span>
+  );
 }
+
+/** Pressing on a person and dragging them onto another room moves them. */
+type Grab = { id: string; name: string; from: string };
+type OnGrab = (e: ReactPointerEvent, g: Grab) => void;
 
 /** Feeds `--level` (voice loudness, 0..1) to the element's CSS, outside React renders. */
 function useVoiceLevel<T extends HTMLElement>(identity: string) {
@@ -74,31 +78,6 @@ function Level({ identity }: { identity: string }) {
     <div ref={ref} className="lvl" aria-hidden>
       {Array.from({ length: LEVEL_SEGMENTS }, (_, i) => <i key={i} />)}
     </div>
-  );
-}
-
-/**
- * Saves 15 s of how this friend sounds here, with network stats, to
- * Downloads: something to send along when "it sounds off".
- */
-function RecordButton({ identity }: { identity: string }) {
-  const [left, setLeft] = useState(0);
-  const [done, setDone] = useState("");
-  const record = async () => {
-    setDone("");
-    try {
-      setDone(`Сохранено: ${await voice.recordPeer(identity, 15, setLeft)}`);
-    } catch (e) {
-      setDone(`Не удалось записать: ${errorText(e)}`);
-    } finally {
-      setLeft(0);
-    }
-  };
-  if (left > 0) return <span className="rec-live">● {left}</span>;
-  return (
-    <button className="icon-btn sm" onClick={record} title={done || "Записать 15 секунд, как этот человек звучит у тебя, в «Загрузки»"} aria-label="Записать звук">
-      <Circle size={12} />
-    </button>
   );
 }
 
@@ -187,10 +166,16 @@ function MeMenu({ onClose, onFile, onPinterest }: { onClose: () => void; onFile:
 /**
  * One person in the call. Volume lives under the mouse wheel (right click
  * resets it) and is only shown when it is not 100% or while changing it.
- * Network numbers appear only when the connection is audibly bad. Our own
- * row opens the avatar menu (`children`) on click.
+ * Our own row opens the avatar menu (`children`) on click.
  */
-function PeerRow(props: { peer: Peer; avatar: string | null; actions?: ReactNode; onClick?: () => void; children?: ReactNode }) {
+function PeerRow(props: {
+  peer: Peer;
+  avatar: string | null;
+  actions?: ReactNode;
+  onClick?: () => void;
+  onGrab?: (e: ReactPointerEvent) => void;
+  children?: ReactNode;
+}) {
   const { peer, actions } = props;
   const level = useVoiceLevel<HTMLDivElement>(peer.identity);
   const settings = useSettings();
@@ -212,14 +197,12 @@ function PeerRow(props: { peer: Peer; avatar: string | null; actions?: ReactNode
     setVolume(volume + (e.deltaY < 0 ? 0.05 : -0.05));
   };
 
-  const net = peer.net;
-  const bad = !!net && (net.lossPct > NET_BAD.lossPct || net.repairPct > NET_BAD.repairPct);
-
   return (
     <div
       ref={level}
-      className={`prow${props.onClick ? " self" : ""}`}
+      className={`prow${props.onClick ? " self" : ""}${props.onGrab ? " grab" : ""}`}
       onClick={props.onClick}
+      onPointerDown={props.onGrab}
       onWheel={onWheel}
       onContextMenu={(e) => {
         if (peer.isLocal) return;
@@ -231,19 +214,12 @@ function PeerRow(props: { peer: Peer; avatar: string | null; actions?: ReactNode
       <Avatar className={`av${peer.speaking ? " speaking" : ""}`} id={peer.identity} name={peer.name} src={props.avatar} />
       <div className="who">
         <div className="name">
-          {peer.name}
-          {peer.isLocal && <span className="me"> · ты</span>}
+          <span className="txt">{peer.name}</span>
+          {peer.isLocal && <span className="me">ты</span>}
+          <SignalBars q={peer.quality} />
         </div>
-        {bad && net && (
-          <div className="problem" title={`потери ${net.lossPct}% · рывки ${net.repairPct}% · джиттер ${net.jitterMs} мс`}>
-            рвётся звук · потери {net.lossPct}%
-          </div>
-        )}
       </div>
-      <div className="acts">
-        {!peer.isLocal && <RecordButton identity={peer.identity} />}
-        {actions}
-      </div>
+      {actions}
       <RoleBadge role={peer.role} />
       {!peer.isLocal && (volume !== 1 || touched) && (
         <span className={`vol${touched ? " show" : ""}`}>{Math.round(volume * 100)}%</span>
@@ -251,10 +227,6 @@ function PeerRow(props: { peer: Peer; avatar: string | null; actions?: ReactNode
       {peer.muted ? (
         <span className="state-ico" aria-label="Микрофон выключен" title="Микрофон выключен">
           <MicOffIcon size={13} />
-        </span>
-      ) : bad ? (
-        <span className="state-ico warn" aria-label="Нестабильная связь">
-          <WeakSignalIcon size={13} />
         </span>
       ) : (
         <Level identity={peer.identity} />
@@ -387,6 +359,46 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
     if (target) void join(target.id);
   };
 
+  // Drag and drop between rooms, with pointer events: WebView2's native
+  // drag and drop belongs to Tauri's file drop handling.
+  const [drag, setDrag] = useState<(Grab & { x: number; y: number; over: string | null }) | null>(null);
+  const canMove = RANK[role] >= RANK.admin;
+
+  const grab: OnGrab = (e, g) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button, .menu-pop")) return;
+    const start = { x: e.clientX, y: e.clientY };
+    let moving = false;
+    const roomAt = (x: number, y: number) => (document.elementFromPoint(x, y)?.closest("[data-room]") as HTMLElement | null)?.dataset.room ?? null;
+    const onMove = (ev: PointerEvent) => {
+      if (!moving && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 6) return;
+      moving = true;
+      setDrag({ ...g, x: ev.clientX, y: ev.clientY, over: roomAt(ev.clientX, ev.clientY) });
+    };
+    const onUp = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      if (!moving) return;
+      // The drop is not a click on the row (our own row opens a menu).
+      window.addEventListener("click", (c) => c.stopPropagation(), { capture: true, once: true });
+      setTimeout(() => setDrag(null));
+      const to = roomAt(ev.clientX, ev.clientY);
+      if (to && to !== g.from) void moveTo(g.id, to);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  async function moveTo(id: string, to: string) {
+    if (id === server.member_id) return join(to);
+    setError("");
+    try {
+      await api(server.host, "POST", `/api/members/${id}/move`, { room: to });
+      setTimeout(() => void loadRooms(), 1200);
+    } catch (e) {
+      handleError(e);
+    }
+  }
+
   async function toggleShare() {
     setError("");
     setShareBusy(true);
@@ -447,10 +459,6 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
     );
   }
 
-  const bad = (v.stats?.lossPct ?? 0) > 2 || (v.stats?.rttMs ?? 0) > 150;
-  const pingText =
-    v.state === "connected" ? (v.stats?.rttMs !== undefined ? `${v.stats.rttMs} мс` : "в сети") : v.state === "connecting" ? "подключаюсь" : "переподключаюсь";
-
   return (
     <div className="server">
       <header className="server-head">
@@ -503,7 +511,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
           // Our own room is live from LiveKit; the others come from the poll.
           const count = mine ? v.peers.length : r.participants.length;
           return (
-            <div key={r.id} className={`room${mine ? " mine" : ""}`}>
+            <div key={r.id} data-room={r.id} className={`room${mine ? " mine" : ""}${drag && drag.over === r.id && drag.from !== r.id ? " drop" : ""}`}>
               <button
                 className="room-head"
                 onClick={() => !mine && join(r.id)}
@@ -523,14 +531,19 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
                         avatar={avatarFor(p.identity)}
                         actions={m && canManage(m) ? memberActions(m) : undefined}
                         onClick={p.isLocal ? () => setMeMenu(!meMenu) : undefined}
+                        onGrab={canMove || p.isLocal ? (e) => grab(e, { id: p.identity, name: p.name, from: r.id }) : undefined}
                       >
                         {p.isLocal && meMenu && meMenuPop()}
                       </PeerRow>
                     );
                   })
                 : r.participants.map((p) => (
-                    <div className="mrow" key={p.id}>
-                      <Avatar className="av off" id={p.id} name={p.name} src={avatarFor(p.id)} />
+                    <div
+                      className={`mrow${canMove || p.id === server.member_id ? " grab" : ""}`}
+                      key={p.id}
+                      onPointerDown={canMove || p.id === server.member_id ? (e) => grab(e, { id: p.id, name: p.name, from: r.id }) : undefined}
+                    >
+                      <Avatar className="av sm" id={p.id} name={p.name} src={avatarFor(p.id)} />
                       <div className="name">{p.name}</div>
                       <RoleBadge role={byId.get(p.id)?.role} />
                     </div>
@@ -568,11 +581,6 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
 
       <footer className="dock-wrap">
         <div className="dock">
-          {connected && (
-            <div className={`ping${v.state !== "connected" ? " wait" : bad ? " warn" : ""}`} title={statsTitle(v.stats)}>
-              <i /> {pingText}
-            </div>
-          )}
           <button
             className={`dbtn${v.micMuted ? " off" : ""}`}
             onClick={() => voice.toggleMic()}
@@ -614,6 +622,13 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
           )}
         </div>
       </footer>
+
+      {drag && (
+        <div className="drag-ghost" style={{ left: drag.x, top: drag.y }}>
+          <Avatar className="av" id={drag.id} name={drag.name} src={avatarFor(drag.id)} />
+          {drag.name}
+        </div>
+      )}
 
       {dialog === "invite" && <InviteDialog host={server.host} onClose={() => setDialog(null)} />}
       {dialog === "settings" && <SettingsDialog onClose={() => setDialog(null)} />}

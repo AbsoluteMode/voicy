@@ -84,8 +84,6 @@ export const defaultSshKey = () => invoke<string | null>("default_ssh_key");
 export const inviteFromClipboard = () => invoke<string | null>("invite_from_clipboard");
 export const inviteInfo = (link: string) => invoke<{ name: string; host: string; deleted: boolean }>("invite_info", { link });
 export const osUsername = () => invoke<string | null>("os_username");
-export const saveRecording = (name: string, wav: Uint8Array, stats: string) =>
-  invoke<string>("save_recording", { name, wav: Array.from(wav), stats });
 
 export function api<T>(host: string, method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown) {
   return invoke<T>("api_request", { host, method, path, body: body ?? null });

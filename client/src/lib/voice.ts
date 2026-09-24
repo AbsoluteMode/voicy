@@ -1,6 +1,8 @@
 import { useSyncExternalStore } from "react";
 import {
   AudioCaptureOptions,
+  ConnectionQuality,
+  createLocalAudioTrack,
   DisconnectReason,
   LocalAudioTrack,
   LocalVideoTrack,
@@ -11,13 +13,16 @@ import {
   Room,
   RoomEvent,
   Track,
+  TrackEvent,
+  TrackEventCallbacks,
   TrackPublishOptions,
 } from "livekit-client";
 
-import { DFN_MAX_REALTIME_FACTOR, dfnRealtimeFactor, VoicyNoiseProcessor } from "./noise";
+import { flushLogs, log, logTo } from "./log";
+import { DFN_MAX_REALTIME_FACTOR, dfnRealtimeFactor, VoicyNoiseProcessor, watchTrack } from "./noise";
 import { SCREEN_CAPTURE, SCREEN_PUBLISH } from "./screen";
 import { getSettings } from "./settings";
-import { api, Role, saveRecording } from "./tauri";
+import { api, Role } from "./tauri";
 
 export type ConnState = "idle" | "connecting" | "connected" | "reconnecting";
 
@@ -33,6 +38,8 @@ export interface Peer {
   muted: boolean;
   /** How their audio actually arrives here, for remote peers. */
   net?: PeerNet;
+  /** Connection bars: 3 good, 2 so-so, 1 bad, 0 not known yet. */
+  quality: 0 | 1 | 2 | 3;
 }
 
 export interface PeerNet {
@@ -43,6 +50,13 @@ export interface PeerNet {
   repairPct: number;
   /** Extra receive buffer we asked for because of repairs, ms. */
   bufferMs: number;
+}
+
+const MOVE_TOPIC = "voicy.move";
+
+/** The mic itself: LiveKit's `mediaStreamTrack` is the processed one once a processor is on. */
+function rawTrack(track: LocalAudioTrack): MediaStreamTrack {
+  return (track as unknown as { _mediaStreamTrack?: MediaStreamTrack })._mediaStreamTrack ?? track.mediaStreamTrack;
 }
 
 /** Above either, the peer's connection is audibly unstable. */
@@ -157,34 +171,6 @@ function cue(kind: "on" | "off") {
   }
 }
 
-/** Mono 16-bit PCM WAV. */
-function wav16(chunks: Float32Array[], rate: number): Uint8Array {
-  const n = chunks.reduce((a, c) => a + c.length, 0);
-  const buf = new ArrayBuffer(44 + n * 2);
-  const v = new DataView(buf);
-  const str = (o: number, s: string) => [...s].forEach((ch, i) => v.setUint8(o + i, ch.charCodeAt(0)));
-  str(0, "RIFF");
-  v.setUint32(4, 36 + n * 2, true);
-  str(8, "WAVEfmt ");
-  v.setUint32(16, 16, true);
-  v.setUint16(20, 1, true);
-  v.setUint16(22, 1, true);
-  v.setUint32(24, rate, true);
-  v.setUint32(28, rate * 2, true);
-  v.setUint16(32, 2, true);
-  v.setUint16(34, 16, true);
-  str(36, "data");
-  v.setUint32(40, n * 2, true);
-  let o = 44;
-  for (const c of chunks) {
-    for (const s of c) {
-      v.setInt16(o, Math.max(-1, Math.min(1, s)) * 0x7fff, true);
-      o += 2;
-    }
-  }
-  return new Uint8Array(buf);
-}
-
 function roleOf(p: Participant): Role | undefined {
   try {
     return p.metadata ? (JSON.parse(p.metadata).role as Role) : undefined;
@@ -199,6 +185,8 @@ class VoiceSession {
   private listeners = new Set<() => void>();
   private snap: VoiceSnapshot = IDLE;
   private micWanted = true;
+  private micPublishing: Promise<void> | null = null;
+  private micUpdate: Promise<void> = Promise.resolve();
 
   subscribe = (fn: () => void) => {
     this.listeners.add(fn);
@@ -226,6 +214,7 @@ class VoiceSession {
       speaking: this.speaking.has(p.identity),
       muted: !p.isMicrophoneEnabled,
       net: this.peerNet.get(p.identity),
+      quality: this.quality(p),
     }));
     peers.sort((a, b) => Number(b.isLocal) - Number(a.isLocal) || a.name.localeCompare(b.name));
     const screens: ScreenShare[] = [];
@@ -248,6 +237,20 @@ class VoiceSession {
     });
   };
 
+  /**
+   * LiveKit scores every participant's own link to the server, so a friend's
+   * bars show their internet, not ours. For ourselves the measured uplink
+   * counts too: it reacts faster than the server's score.
+   */
+  private quality(p: Participant): Peer["quality"] {
+    if (p === this.room?.localParticipant && this.snap.state !== "connected") return 0;
+    const lk = ({ [ConnectionQuality.Excellent]: 3, [ConnectionQuality.Good]: 2, [ConnectionQuality.Poor]: 1, [ConnectionQuality.Lost]: 1 } as Record<string, 1 | 2 | 3>)[p.connectionQuality];
+    if (p !== this.room?.localParticipant) return lk ?? 0;
+    const st = this.snap.stats;
+    const own = !st ? 3 : (st.lossPct ?? 0) > 5 || (st.rttMs ?? 0) > 300 ? 1 : (st.lossPct ?? 0) > 1.5 || (st.rttMs ?? 0) > 150 ? 2 : 3;
+    return Math.min(lk ?? 3, own) as 1 | 2 | 3;
+  }
+
   private applyVolume(p: RemoteParticipant) {
     const deaf = this.snap.deafened;
     p.setVolume(deaf ? 0 : (getSettings().volumes[p.identity] ?? 1));
@@ -265,6 +268,8 @@ class VoiceSession {
     const gen = ++this.generation;
     const stale = () => gen !== this.generation;
     this.teardown();
+    logTo(host);
+    log("connect", { room: roomId, ptt: getSettings().pushToTalk, noise: getSettings().noise });
     // In push-to-talk mode the mic starts closed.
     if (getSettings().pushToTalk) this.micWanted = false;
     this.set({ ...IDLE, host, room: roomId, state: "connecting", micMuted: !this.micWanted });
@@ -277,6 +282,7 @@ class VoiceSession {
       // let per-member volume go above 100%.
       const ctx = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
       this.ctx = ctx;
+      ctx.onstatechange = () => log("play-ctx", { state: ctx.state });
       const s = getSettings();
       const room = new Room({
         // Video only: each viewer gets the stream layer that fits its tile
@@ -307,6 +313,26 @@ class VoiceSession {
         .on(RoomEvent.ParticipantNameChanged, this.refresh)
         .on(RoomEvent.ParticipantMetadataChanged, this.refresh)
         .on(RoomEvent.AudioPlaybackStatusChanged, this.refresh)
+        .on(RoomEvent.ConnectionQualityChanged, (q, p) => {
+          if (p === room.localParticipant) log("quality", { q });
+          this.refresh();
+        })
+        .on(RoomEvent.TrackMuted, (pub, p) => p === room.localParticipant && log("lk-track-muted", { source: pub.source }))
+        .on(RoomEvent.TrackUnmuted, (pub, p) => p === room.localParticipant && log("lk-track-unmuted", { source: pub.source }))
+        .on(RoomEvent.LocalTrackUnpublished, (pub) => log("lk-unpublished", { source: pub.source }))
+        .on(RoomEvent.MediaDevicesError, (e) => log("media-error", { msg: String(e?.message ?? e) }))
+        .on(RoomEvent.ActiveDeviceChanged, (kind, id) => log("active-device", { kind, id: id.slice(0, 12) }))
+        .on(RoomEvent.DataReceived, (payload, from, _kind, topic) => {
+          // An admin dragged us to another room. Only the server can send
+          // data (members may not publish it), and it has no participant.
+          if (from || topic !== MOVE_TOPIC || this.room !== room) return;
+          try {
+            const to = JSON.parse(new TextDecoder().decode(payload)).room;
+            if (typeof to === "string" && to !== this.snap.room) void this.connect(host, to).catch(() => {});
+          } catch {
+            // Not ours to act on.
+          }
+        })
         .on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub, p: RemoteParticipant) => {
           if (track.kind === Track.Kind.Audio) {
             track.attach();
@@ -318,8 +344,16 @@ class VoiceSession {
           track.detach();
           this.refresh();
         })
-        .on(RoomEvent.Reconnecting, () => this.set({ state: "reconnecting" }))
-        .on(RoomEvent.Reconnected, () => this.set({ state: "connected" }))
+        .on(RoomEvent.Reconnecting, () => {
+          log("reconnecting");
+          this.set({ state: "reconnecting" });
+          this.refresh();
+        })
+        .on(RoomEvent.Reconnected, () => {
+          log("reconnected");
+          this.set({ state: "connected" });
+          this.refresh();
+        })
         .on(RoomEvent.Disconnected, (reason?: DisconnectReason) => {
           if (this.room !== room) return;
           const endReason: EndReason | undefined =
@@ -332,6 +366,7 @@ class VoiceSession {
                   : reason === DisconnectReason.CLIENT_INITIATED
                     ? undefined
                     : "lost";
+          log("disconnected", { reason, endReason });
           this.teardown();
           this.set({ ...IDLE, host, room: roomId, endReason });
         });
@@ -339,16 +374,19 @@ class VoiceSession {
       // Superseded attempts already had their room closed by teardown().
       await room.connect(url, token, { autoSubscribe: true });
       if (stale()) return;
+      log("connected");
       this.set({ state: "connected" });
-      await room.localParticipant.setMicrophoneEnabled(this.micWanted);
+      // Published closed even in push-to-talk mode, so the first press
+      // does not wait for the mic and the noise model to start.
+      await this.publishMic(room);
       if (stale()) return;
-      await this.applyNoise();
       this.refresh();
       this.startStats();
       this.meterTimer = setInterval(this.tickMeters, 50);
     } catch (e) {
       // A newer session owns the state now; this failure is not its problem.
       if (stale()) return;
+      log("connect-failed", { msg: String((e as Error)?.message ?? e) });
       this.teardown();
       const msg = e instanceof Error ? e.message : typeof e === "object" && e && "message" in e ? String(e.message) : String(e);
       this.set({ ...IDLE, host, room: roomId, error: msg, endReason: /full|max/i.test(msg) ? "full" : undefined });
@@ -451,10 +489,55 @@ class VoiceSession {
     }
     if (changed) this.refresh();
     if (levelsMoved) this.levelListeners.forEach((fn) => fn());
+    this.sampleLevels(ctx);
   };
+
+  // Our own mic before and after noise suppression, loudest 50 ms of every
+  // 10 s, for the logs: voice in and silence out means the processing.
+  private levelMeters = new Map<string, { track: MediaStreamTrack; src: MediaStreamAudioSourceNode; an: AnalyserNode }>();
+  private levelPeak = { raw: 0, out: 0, ticks: 0 };
+
+  private sampleLevels(ctx: AudioContext) {
+    const track = this.micTrack();
+    if (!track) return;
+    const taps = { raw: rawTrack(track), out: track.mediaStreamTrack };
+    for (const [key, t] of Object.entries(taps) as ["raw" | "out", MediaStreamTrack][]) {
+      let m = this.levelMeters.get(key);
+      if (m && m.track !== t) {
+        m.src.disconnect();
+        m = undefined;
+      }
+      if (!m) {
+        const src = ctx.createMediaStreamSource(new MediaStream([t]));
+        const an = ctx.createAnalyser();
+        an.fftSize = this.meterBuf.length;
+        src.connect(an);
+        m = { track: t, src, an };
+        this.levelMeters.set(key, m);
+      }
+      m.an.getFloatTimeDomainData(this.meterBuf);
+      let sum = 0;
+      for (const v of this.meterBuf) sum += v * v;
+      this.levelPeak[key] = Math.max(this.levelPeak[key], Math.sqrt(sum / this.meterBuf.length));
+    }
+    if (++this.levelPeak.ticks < 200) return;
+    const db = (v: number) => (v > 0 ? Math.round(20 * Math.log10(v)) : -120);
+    log("level", {
+      raw: db(this.levelPeak.raw),
+      out: db(this.levelPeak.out),
+      muted: this.snap.micMuted,
+      published: !this.room?.localParticipant.getTrackPublication(Track.Source.Microphone)?.isMuted,
+      rawOn: taps.raw.enabled && taps.raw.readyState === "live" && !taps.raw.muted,
+      nsCtx: (track.getProcessor() as VoicyNoiseProcessor | undefined)?.contextState,
+    });
+    this.levelPeak = { raw: 0, out: 0, ticks: 0 };
+  }
 
   private stopMeters() {
     clearInterval(this.meterTimer);
+    this.levelMeters.forEach((m) => m.src.disconnect());
+    this.levelMeters.clear();
+    this.levelPeak = { raw: 0, out: 0, ticks: 0 };
     this.meters.forEach((m) => m.src.disconnect());
     this.meters.clear();
     this.lastLoud.clear();
@@ -536,36 +619,6 @@ class VoiceSession {
     return ms;
   }
 
-  /**
-   * Records how a friend actually sounds here, after the network and the
-   * receiver, to a WAV in Downloads with a per-second stats timeline.
-   */
-  async recordPeer(identity: string, seconds: number, onTick: (left: number) => void): Promise<string> {
-    const p = this.room?.remoteParticipants.get(identity);
-    const track = p?.getTrackPublication(Track.Source.Microphone)?.track;
-    if (!p || !track) throw new Error("у участника сейчас нет звука");
-    const ctx = new AudioContext({ sampleRate: 48000 });
-    const worklet = `class R extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0][0];if(c)this.port.postMessage(c.slice(0));return true}}registerProcessor("voicy-recorder",R)`;
-    const url = URL.createObjectURL(new Blob([worklet], { type: "application/javascript" }));
-    await ctx.audioWorklet.addModule(url);
-    URL.revokeObjectURL(url);
-    const node = new AudioWorkletNode(ctx, "voicy-recorder", { numberOfOutputs: 0 });
-    const chunks: Float32Array[] = [];
-    node.port.onmessage = (e) => chunks.push(e.data as Float32Array);
-    const src = ctx.createMediaStreamSource(new MediaStream([track.mediaStreamTrack]));
-    src.connect(node);
-    const timeline: unknown[] = [];
-    for (let left = seconds; left > 0; left--) {
-      onTick(left);
-      await new Promise((r) => setTimeout(r, 1000));
-      timeline.push({ t: seconds - left + 1, ...this.peerNet.get(identity) });
-    }
-    src.disconnect();
-    await ctx.close();
-    const stats = JSON.stringify({ name: p.name, identity, seconds, settings: getSettings(), timeline }, null, 1);
-    return saveRecording(p.name || identity, wav16(chunks, 48000), stats);
-  }
-
   private async sampleStats() {
     void this.sampleReceivers().catch(() => {});
     const sender = this.micTrack()?.sender;
@@ -586,6 +639,7 @@ class VoiceSession {
       }
     });
     this.set({ stats });
+    this.refresh();
     void this.adaptSendBitrate(sender, stats.lossPct ?? 0);
   }
 
@@ -666,6 +720,8 @@ class VoiceSession {
     clearInterval(this.statsTimer);
     const room = this.room;
     this.room = null;
+    this.micPublishing = null;
+    this.micUpdate = Promise.resolve();
     room?.removeAllListeners();
     void room?.disconnect();
     void this.ctx?.close();
@@ -673,6 +729,8 @@ class VoiceSession {
   }
 
   async disconnect() {
+    log("leave");
+    void flushLogs();
     this.generation++;
     const { host, room } = this.snap;
     this.teardown();
@@ -692,7 +750,8 @@ class VoiceSession {
     if (this.room === room) this.refresh();
   }
 
-  async setMicMuted(muted: boolean) {
+  async setMicMuted(muted: boolean, why = "?") {
+    log("mic", { muted, why, deafened: this.snap.deafened });
     // Unmuting while deafened undeafens too: talking into a room you
     // cannot hear is never what the click meant.
     if (!muted && this.snap.deafened) {
@@ -701,9 +760,8 @@ class VoiceSession {
     }
     this.micWanted = !muted;
     this.set({ micMuted: muted });
-    await this.room?.localParticipant.setMicrophoneEnabled(!muted);
-    // The first unmute of a session creates the track.
-    if (!muted) await this.applyNoise();
+    const room = this.room;
+    if (room) await this.syncMic(room);
     this.refresh();
   }
 
@@ -711,12 +769,82 @@ class VoiceSession {
     return this.room?.localParticipant.getTrackPublication(Track.Source.Microphone)?.track as LocalAudioTrack | undefined;
   }
 
+  /** Everything LiveKit, the browser or Windows does to our mic. */
+  private watchMic(track: LocalAudioTrack) {
+    watchTrack(rawTrack(track), "mic");
+    for (const ev of [TrackEvent.Muted, TrackEvent.Unmuted, TrackEvent.Ended, TrackEvent.Restarted, TrackEvent.UpstreamPaused, TrackEvent.UpstreamResumed, TrackEvent.AudioSilenceDetected]) {
+      track.on(ev as keyof TrackEventCallbacks, () => {
+        const raw = rawTrack(track);
+        log(`track-${ev}`, { label: raw.label, state: raw.readyState });
+        if (ev === TrackEvent.Restarted) watchTrack(raw, "mic");
+      });
+    }
+  }
+
+  /** Serializes mute, push-to-talk and deafen, also during the first capture. */
+  private syncMic(room: Room): Promise<void> {
+    const pending = this.micUpdate
+      .catch(() => {})
+      .then(async () => {
+        if (this.room !== room) return;
+        if (this.micPublishing) await this.micPublishing.catch(() => {});
+        if (this.room !== room) return;
+        if (!this.micTrack()) {
+          if (this.micWanted && !this.snap.deafened) await this.publishMic(room);
+        } else {
+          log("mic-sync", { on: this.micWanted && !this.snap.deafened });
+          await room.localParticipant.setMicrophoneEnabled(this.micWanted && !this.snap.deafened);
+        }
+      });
+    this.micUpdate = pending;
+    return pending;
+  }
+
+  /**
+   * Captures the mic and puts noise suppression on it before it is
+   * published, so nobody ever hears the raw mic while the model loads.
+   */
+  private publishMic(room: Room): Promise<void> {
+    if (this.room === room && this.micTrack()) return Promise.resolve();
+    if (this.micPublishing) return this.micPublishing;
+    const gen = this.generation;
+    const current = () => this.room === room && gen === this.generation;
+    const pending = (async () => {
+      log("mic-capture");
+      const track = await createLocalAudioTrack(captureOptions());
+      this.watchMic(track);
+      let published = false;
+      try {
+        if (!current()) return;
+        track.setAudioContext(this.ctx ?? undefined);
+        await this.applyNoise(track, current);
+        if (!current()) return;
+        // Published closed, then opened to the latest wanted state: a toggle
+        // during capture or negotiation cannot expose the mic early.
+        await track.mute();
+        await room.localParticipant.publishTrack(track, publishOptions());
+        published = true;
+        log("mic-published", { label: rawTrack(track).label, settings: track.getSourceTrackSettings() });
+        if (current()) await room.localParticipant.setMicrophoneEnabled(this.micWanted && !this.snap.deafened);
+      } finally {
+        if (!published) track.stop();
+      }
+    })();
+    this.micPublishing = pending;
+    pending.catch((e) => log("mic-publish-failed", { msg: String(e?.message ?? e) }));
+    void pending
+      .finally(() => {
+        if (this.micPublishing === pending) this.micPublishing = null;
+      })
+      .catch(() => {});
+    return pending;
+  }
+
   /**
    * Puts our processor on the mic track in the configured mode. It stays on
    * with suppression off too, because it also forces the track to mono.
    */
-  private async applyNoise() {
-    const track = this.micTrack();
+  private async applyNoise(track = this.micTrack(), report = () => true) {
     if (!track) return;
     let mode = getSettings().noise;
     const current = track.getProcessor();
@@ -734,7 +862,7 @@ class VoiceSession {
       } else {
         await track.setProcessor(new VoicyNoiseProcessor(mode));
       }
-      this.set({ noiseError: notice });
+      if (report()) this.set({ noiseError: notice });
     } catch (e) {
       console.error("noise suppression failed", e);
       // DeepFilterNet is the heavy one; RNNoise is the safe fallback, and a
@@ -745,34 +873,38 @@ class VoiceSession {
         () => true,
         () => false,
       );
-      this.set({
-        noiseError: ok && fallback === "light" ? "DeepFilterNet не запустился, включено лёгкое шумоподавление." : "Шумоподавление не запустилось.",
-      });
+      if (report()) {
+        this.set({
+          noiseError: ok && fallback === "light" ? "DeepFilterNet не запустился, включено лёгкое шумоподавление." : "Шумоподавление не запустилось.",
+        });
+      }
     }
   }
 
   /** Deafen also mutes the mic, and undeafen restores what it was. */
   async setDeafened(deafened: boolean) {
+    log("deafen", { deafened });
     this.set({ deafened });
     this.room?.remoteParticipants.forEach((p) => this.applyVolume(p));
     if (deafened) {
-      await this.room?.localParticipant.setMicrophoneEnabled(false);
       this.set({ micMuted: true });
+      if (this.room) await this.syncMic(this.room);
     } else {
-      await this.setMicMuted(!this.micWanted);
+      await this.setMicMuted(!this.micWanted, "undeafen");
     }
     this.refresh();
   }
 
   /** Mic toggle from the button or the hotkey, with a Discord-style cue. */
-  async toggleMic() {
+  async toggleMic(source = "button") {
     const muted = !this.snap.micMuted;
     cue(muted ? "off" : "on");
-    await this.setMicMuted(muted);
+    await this.setMicMuted(muted, source);
   }
 
-  async toggleDeafen() {
+  async toggleDeafen(source = "button") {
     const deafened = !this.snap.deafened;
+    log("deafen-toggle", { source });
     cue(deafened ? "off" : "on");
     await this.setDeafened(deafened);
   }
@@ -780,7 +912,7 @@ class VoiceSession {
   /** Switching push-to-talk on closes the mic; switching it off reopens it. */
   async setPushToTalkMode(on: boolean) {
     clearTimeout(this.pttRelease);
-    await this.setMicMuted(on);
+    await this.setMicMuted(on, "ptt-mode");
   }
 
   private pttRelease: ReturnType<typeof setTimeout> | undefined;
@@ -793,9 +925,9 @@ class VoiceSession {
     clearTimeout(this.pttRelease);
     if (!this.room || !getSettings().pushToTalk) return;
     if (held) {
-      if (this.snap.micMuted) await this.setMicMuted(false);
+      if (this.snap.micMuted) await this.setMicMuted(false, "ptt-down");
     } else {
-      this.pttRelease = setTimeout(() => void this.setMicMuted(true), 250);
+      this.pttRelease = setTimeout(() => void this.setMicMuted(true, "ptt-up"), 250);
     }
   }
 
@@ -824,11 +956,11 @@ class VoiceSession {
     if (opts.republish) {
       // Bitrate is negotiated at publish time.
       await room.localParticipant.unpublishTrack(track, true);
-      await room.localParticipant.setMicrophoneEnabled(this.micWanted && !this.snap.deafened, captureOptions(), publishOptions());
+      await this.publishMic(room);
     } else {
       await track.restartTrack(captureOptions());
+      await this.applyNoise();
     }
-    await this.applyNoise();
     this.refresh();
   }
 

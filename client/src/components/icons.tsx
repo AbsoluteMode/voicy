@@ -7,10 +7,22 @@ type P = { size?: number };
 
 const cut = "var(--cut, #18181c)";
 
+/** Five voice bars whose ends draw a V, on a lime tile. */
+const LOGO_BARS: [number, number][] = [
+  [5.6, 8],
+  [10.1, 11.5],
+  [14.6, 15],
+  [19.1, 11.5],
+  [23.6, 8],
+];
+
 export function Logo({ size = 22 }: P) {
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" aria-hidden>
-      <path d="M4 12.2C5.4 10.6 6.6 9.6 8.4 9.6C11.6 9.6 12.6 22.6 16 22.6C19.4 22.6 20.4 9.6 23.6 9.6C25.4 9.6 26.6 10.6 28 12.2" />
+    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden>
+      <rect width="32" height="32" rx="9" fill="var(--accent, #c6f36b)" />
+      {LOGO_BARS.map(([x, h]) => (
+        <rect key={x} x={x} y="8.5" width="2.8" height={h} rx="1.4" fill="#09090b" />
+      ))}
     </svg>
   );
 }

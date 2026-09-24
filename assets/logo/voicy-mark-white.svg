@@ -1,4 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="128" height="128" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="128" height="128">
   <title>Voicy</title>
-  <path d="M4 12.2C5.4 10.6 6.6 9.6 8.4 9.6C11.6 9.6 12.6 22.6 16 22.6C19.4 22.6 20.4 9.6 23.6 9.6C25.4 9.6 26.6 10.6 28 12.2" stroke="#F4F4F5" stroke-width="3.4" stroke-linecap="round"/>
+  <rect x="5.6" y="8.5" width="2.8" height="8" rx="1.4" fill="#ffffff"/>
+  <rect x="10.1" y="8.5" width="2.8" height="11.5" rx="1.4" fill="#ffffff"/>
+  <rect x="14.6" y="8.5" width="2.8" height="15" rx="1.4" fill="#ffffff"/>
+  <rect x="19.1" y="8.5" width="2.8" height="11.5" rx="1.4" fill="#ffffff"/>
+  <rect x="23.6" y="8.5" width="2.8" height="8" rx="1.4" fill="#ffffff"/>
 </svg>
