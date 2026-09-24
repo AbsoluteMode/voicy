@@ -23,7 +23,12 @@ struct VideoGrant {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     can_publish_sources: Vec<&'static str>,
     can_update_own_metadata: bool,
+    /// Invisible to other participants.
+    hidden: bool,
 }
+
+/// Suffix of the hidden listener identity used by a member's echo test.
+pub const ECHO_SUFFIX: &str = "#echo";
 
 #[derive(Serialize)]
 struct Claims {
@@ -83,6 +88,24 @@ impl LiveKit {
                 can_publish: true,
                 can_subscribe: true,
                 can_publish_sources: vec!["microphone"],
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Hidden, listen-only participant that lets a member hear their own
+    /// track back through the SFU.
+    pub fn echo_token(&self, room: &str, identity: &str) -> Result<String> {
+        self.sign(
+            &format!("{identity}{ECHO_SUFFIX}"),
+            120,
+            Some("echo".to_owned()),
+            None,
+            VideoGrant {
+                room: room.to_owned(),
+                room_join: true,
+                can_subscribe: true,
+                hidden: true,
                 ..Default::default()
             },
         )

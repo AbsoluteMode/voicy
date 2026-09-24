@@ -40,11 +40,33 @@ export interface VoiceSnapshot {
   audioBlocked: boolean;
   /** Set when the chosen noise suppression could not start. */
   noiseError?: string;
+  /** Hearing yourself back through the server. */
+  echo: boolean;
+  /** Measured, not configured: what the mic stream actually does. */
+  stats?: AudioStats;
   endReason?: EndReason;
   error?: string;
 }
 
-const IDLE: VoiceSnapshot = { host: null, state: "idle", peers: [], micMuted: false, deafened: false, audioBlocked: false };
+export interface AudioStats {
+  /** Outgoing Opus bitrate, kbit/s. */
+  sendKbps?: number;
+  /** Round trip to the server, ms. */
+  rttMs?: number;
+  /** Packets the server did not get, %. */
+  lossPct?: number;
+  jitterMs?: number;
+}
+
+const IDLE: VoiceSnapshot = {
+  host: null,
+  state: "idle",
+  peers: [],
+  micMuted: false,
+  deafened: false,
+  audioBlocked: false,
+  echo: false,
+};
 
 function captureOptions(): AudioCaptureOptions {
   const s = getSettings();
@@ -203,6 +225,7 @@ class VoiceSession {
       if (stale()) return;
       await this.applyNoise();
       this.refresh();
+      this.startStats();
     } catch (e) {
       // A newer session owns the state now; this failure is not its problem.
       if (stale()) return;
@@ -213,7 +236,84 @@ class VoiceSession {
     }
   }
 
+  private statsTimer: ReturnType<typeof setInterval> | undefined;
+  private lastSent: { bytes: number; at: number } | null = null;
+
+  private startStats() {
+    clearInterval(this.statsTimer);
+    this.lastSent = null;
+    this.statsTimer = setInterval(() => void this.sampleStats(), 1000);
+  }
+
+  private async sampleStats() {
+    const sender = this.micTrack()?.sender;
+    if (!sender) return this.set({ stats: undefined });
+    const stats: AudioStats = {};
+    (await sender.getStats()).forEach((r) => {
+      if (r.type === "outbound-rtp") {
+        const now = r.timestamp as number;
+        const bytes = r.bytesSent as number;
+        if (this.lastSent && now > this.lastSent.at) {
+          stats.sendKbps = Math.round(((bytes - this.lastSent.bytes) * 8) / (now - this.lastSent.at));
+        }
+        this.lastSent = { bytes, at: now };
+      } else if (r.type === "remote-inbound-rtp") {
+        if (typeof r.roundTripTime === "number") stats.rttMs = Math.round(r.roundTripTime * 1000);
+        if (typeof r.fractionLost === "number") stats.lossPct = Math.round(r.fractionLost * 1000) / 10;
+        if (typeof r.jitter === "number") stats.jitterMs = Math.round(r.jitter * 1000);
+      }
+    });
+    this.set({ stats });
+  }
+
+  private echoRoom: Room | null = null;
+
+  /**
+   * Echo test: a hidden second connection subscribes to your own mic, so you
+   * hear yourself after Opus, noise suppression, the network and the SFU,
+   * exactly like friends do.
+   */
+  async setEcho(on: boolean) {
+    this.stopEcho();
+    const room = this.room;
+    const host = this.snap.host;
+    if (!on || !room || !host || !this.ctx) return;
+    const gen = this.generation;
+    const { url, token } = await api<{ url: string; token: string }>(host, "POST", "/api/token", { echo: true });
+    if (gen !== this.generation || this.room !== room) return;
+    const s = getSettings();
+    const echo = new Room({
+      adaptiveStream: false,
+      webAudioMix: { audioContext: this.ctx },
+      audioOutput: s.outputDevice ? { deviceId: s.outputDevice } : undefined,
+    });
+    const me = room.localParticipant.identity;
+    const listen = (p: RemoteParticipant) => {
+      if (p.identity === me) p.getTrackPublication(Track.Source.Microphone)?.setSubscribed(true);
+    };
+    echo
+      .on(RoomEvent.TrackPublished, (_pub, p) => listen(p))
+      .on(RoomEvent.ParticipantConnected, listen)
+      .on(RoomEvent.TrackSubscribed, (track: RemoteTrack) => void track.attach())
+      .on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => void track.detach());
+    this.echoRoom = echo;
+    await echo.connect(url, token, { autoSubscribe: false });
+    if (this.echoRoom !== echo) return void echo.disconnect();
+    echo.remoteParticipants.forEach(listen);
+    this.set({ echo: true });
+  }
+
+  private stopEcho() {
+    const echo = this.echoRoom;
+    this.echoRoom = null;
+    echo?.removeAllListeners();
+    void echo?.disconnect();
+    if (this.snap.echo) this.set({ echo: false });
+  }
+
   private teardown() {
+    this.stopEcho();
+    clearInterval(this.statsTimer);
     const room = this.room;
     this.room = null;
     room?.removeAllListeners();

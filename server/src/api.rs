@@ -11,6 +11,7 @@ use crate::{
     auth::{hash, random_secret, AuthMember},
     db::{now, Invite, Member, Redeem, Role},
     error::{ApiError, ApiResult},
+    livekit::ECHO_SUFFIX,
     SharedState, ROOM,
 };
 
@@ -111,9 +112,25 @@ async fn leave(State(s): State<SharedState>, AuthMember(m): AuthMember) -> ApiRe
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn token(State(s): State<SharedState>, AuthMember(m): AuthMember) -> ApiResult<Json<Value>> {
-    let metadata = json!({ "role": m.role }).to_string();
-    let token = s.lk.join_token(ROOM, &m.id, &m.nickname, metadata)?;
+#[derive(Deserialize, Default)]
+struct TokenReq {
+    /// Token for the member's hidden echo-test listener instead.
+    #[serde(default)]
+    echo: bool,
+}
+
+async fn token(
+    State(s): State<SharedState>,
+    AuthMember(m): AuthMember,
+    body: Option<Json<TokenReq>>,
+) -> ApiResult<Json<Value>> {
+    let echo = body.is_some_and(|Json(b)| b.echo);
+    let token = if echo {
+        s.lk.echo_token(ROOM, &m.id)?
+    } else {
+        let metadata = json!({ "role": m.role }).to_string();
+        s.lk.join_token(ROOM, &m.id, &m.nickname, metadata)?
+    };
     Ok(Json(json!({ "url": s.cfg.livekit_url(), "room": ROOM, "token": token })))
 }
 
@@ -133,8 +150,10 @@ fn outranks(actor: &Member, target: &Member) -> ApiResult<()> {
 }
 
 async fn disconnect(s: &SharedState, identity: &str) {
-    if let Err(e) = s.lk.remove_participant(ROOM, identity).await {
-        tracing::warn!("could not disconnect {identity}: {e:#}");
+    for id in [identity.to_owned(), format!("{identity}{ECHO_SUFFIX}")] {
+        if let Err(e) = s.lk.remove_participant(ROOM, &id).await {
+            tracing::warn!("could not disconnect {id}: {e:#}");
+        }
     }
 }
 
@@ -244,7 +263,8 @@ async fn rtc_auth(State(s): State<SharedState>, headers: axum::http::HeaderMap) 
         .and_then(access_token)
         .and_then(|t| s.lk.verify_identity(t))
         .ok_or(ApiError::Unauthorized)?;
-    if s.db.member(&identity)?.is_none() {
+    let member_id = identity.strip_suffix(ECHO_SUFFIX).unwrap_or(&identity);
+    if s.db.member(member_id)?.is_none() {
         return Err(ApiError::Forbidden("not a member"));
     }
     Ok(StatusCode::NO_CONTENT)

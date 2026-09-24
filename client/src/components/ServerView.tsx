@@ -1,4 +1,6 @@
 import {
+  Ear,
+  EarOff,
   Headphones,
   HeadphoneOff,
   LogOut,
@@ -18,7 +20,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { updateSettings, useSettings } from "../lib/settings";
 import { api, errorCode, errorText, forgetServer, Member, Role, SavedServer } from "../lib/tauri";
-import { EndReason, Peer, useVoice, voice } from "../lib/voice";
+import { AudioStats, EndReason, Peer, useVoice, voice } from "../lib/voice";
 import { DeleteDialog } from "./DeleteDialog";
 import { InviteDialog } from "./InviteDialog";
 import { SettingsDialog } from "./SettingsDialog";
@@ -33,6 +35,25 @@ const END_TEXT: Record<EndReason, string> = {
   lost: "Связь с сервером потеряна.",
   full: "На сервере уже максимум участников (10).",
 };
+
+function StatsLine({ s }: { s: AudioStats }) {
+  const parts = [
+    s.sendKbps !== undefined && `${s.sendKbps} кбит/с`,
+    s.rttMs !== undefined && `пинг ${s.rttMs} мс`,
+    s.lossPct !== undefined && `потери ${s.lossPct}%`,
+    s.jitterMs !== undefined && `джиттер ${s.jitterMs} мс`,
+  ].filter(Boolean);
+  if (!parts.length) return null;
+  const bad = (s.lossPct ?? 0) > 2 || (s.rttMs ?? 0) > 150;
+  return (
+    <span
+      style={{ color: bad ? "var(--warn)" : "var(--faint)" }}
+      title="Реальные цифры твоего микрофона до сервера. Битрейт примерно вдвое выше настроенного: каждый пакет несёт копию предыдущего (RED), чтобы потери не были слышны."
+    >
+      · {parts.join(" · ")}
+    </span>
+  );
+}
 
 function PeerTile({ peer }: { peer: Peer }) {
   const settings = useSettings();
@@ -242,6 +263,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
             <>
               <span className={`pulse${v.state === "connected" ? "" : " warn"}`} />
               {v.state === "connected" ? "Голос подключён" : v.state === "connecting" ? "Подключаюсь…" : "Переподключаюсь…"}
+              {v.stats && <StatsLine s={v.stats} />}
             </>
           ) : (
             <span>Не в голосе · {server.nickname}</span>
@@ -253,6 +275,15 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
         <button className={`icon-btn${v.deafened ? " off" : ""}`} onClick={() => voice.setDeafened(!v.deafened)} title={v.deafened ? "Включить звук" : "Выключить звук"}>
           {v.deafened ? <HeadphoneOff size={18} /> : <Headphones size={18} />}
         </button>
+        {connected && (
+          <button
+            className={`icon-btn${v.echo ? " on" : ""}`}
+            onClick={() => void voice.setEcho(!v.echo).catch(handleError)}
+            title={v.echo ? "Выключить эхо-тест" : "Эхо-тест: услышать себя так, как слышат друзья (только в наушниках)"}
+          >
+            {v.echo ? <EarOff size={18} /> : <Ear size={18} />}
+          </button>
+        )}
         <button className="icon-btn" onClick={() => setDialog("settings")} title="Настройки звука">
           <Settings size={18} />
         </button>

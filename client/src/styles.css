@@ -136,6 +136,7 @@ button { font: inherit; color: inherit; }
   display: grid; place-items: center; transition: background .12s;
 }
 .icon-btn:hover { background: var(--line); }
+.icon-btn.on { background: rgba(124, 108, 255, .22); color: var(--accent-2); }
 .icon-btn.off { background: rgba(255, 92, 108, .16); color: var(--danger); }
 .icon-btn.hang { background: var(--danger); color: #fff; }
 .icon-btn.sm { width: 28px; height: 28px; border-radius: 8px; background: transparent; }
