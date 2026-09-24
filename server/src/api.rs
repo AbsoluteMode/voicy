@@ -29,6 +29,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/invites", get(list_invites).post(create_invite))
         .route("/api/invites/{id}", delete(revoke_invite))
         .route("/api/server", delete(delete_server))
+        .route("/join/{code}", get(crate::invite_page::page))
         .with_state(state)
 }
 

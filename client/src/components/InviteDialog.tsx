@@ -60,7 +60,7 @@ export function InviteDialog({ host, onClose }: { host: string; onClose: () => v
               {copied ? "Скопировано" : "Копировать"}
             </button>
           </div>
-          <small>Друг вставляет её в Voicy через «Подключиться» или просто кликает по ней.</small>
+          <small>Отправь её в любой мессенджер. Друг кликнет, скачает Voicy, и приглашение подхватится само.</small>
         </div>
       )}
       {error && <div className="error">{error}</div>}

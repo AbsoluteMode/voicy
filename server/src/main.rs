@@ -2,6 +2,7 @@ mod api;
 mod auth;
 mod db;
 mod error;
+mod invite_page;
 mod livekit;
 
 use std::{env, net::SocketAddr, sync::Arc};
@@ -53,8 +54,10 @@ impl Config {
         format!("wss://{}", self.public_host)
     }
 
+    /// A plain https link, so it is clickable in any messenger. The page
+    /// behind it opens the app or offers the download.
     pub fn invite_link(&self, code: &str) -> String {
-        format!("voicy://join/{}/{}", self.public_host, code)
+        format!("https://{}/join/{}", self.public_host, code)
     }
 }
 

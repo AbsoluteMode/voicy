@@ -17,17 +17,54 @@ fn list_servers(app: AppHandle) -> CmdResult<Vec<SavedServer>> {
     Ok(store::load(&app)?)
 }
 
-/// Parses `voicy://join/<host>/<code>` (surrounding junk from chats is fine).
+/// Parses `https://<host>/join/<code>` or `voicy://join/<host>/<code>`.
+/// Surrounding text pasted from a chat is fine.
 fn parse_invite(link: &str) -> CmdResult<(String, String)> {
-    let bad = || CmdError::new("invalid", "это не похоже на ссылку-приглашение voicy://join/…");
-    let rest = link.trim().trim_matches(|c| c == '<' || c == '>' || c == '"');
-    let rest = rest.split_once("voicy://join/").ok_or_else(bad)?.1;
-    let (host, code) = rest.split_once('/').ok_or_else(bad)?;
-    let code = code.trim_end_matches('/');
-    if !api::valid_host(host) || code.is_empty() || !code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    let bad = || CmdError::new("invalid", "это не похоже на ссылку-приглашение Voicy");
+    let text = link.trim();
+    let (host, code) = if let Some((_, rest)) = text.split_once("voicy://join/") {
+        rest.split_once('/').ok_or_else(bad)?
+    } else {
+        let rest = text.split_once("https://").ok_or_else(bad)?.1;
+        let (host, path) = rest.split_once('/').ok_or_else(bad)?;
+        (host, path.strip_prefix("join/").ok_or_else(bad)?)
+    };
+    let code: String = code.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    if !api::valid_host(host) || code.len() < 16 {
         return Err(bad());
     }
-    Ok((host.to_owned(), code.to_owned()))
+    Ok((host.to_owned(), code))
+}
+
+/// An invite link from the clipboard for a server we have not joined yet.
+/// This is how the download button on the invite page hands the link over.
+#[tauri::command]
+fn invite_from_clipboard(app: AppHandle) -> Option<String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    let text = app.clipboard().read_text().ok()?;
+    if text.len() > 2048 {
+        return None;
+    }
+    let (host, code) = parse_invite(&text).ok()?;
+    let saved = store::load(&app).ok()?;
+    if saved.iter().any(|s| s.host == host) {
+        return None;
+    }
+    Some(format!("https://{host}/join/{code}"))
+}
+
+/// Public info about the server an invite points to.
+#[tauri::command]
+async fn invite_info(link: String) -> CmdResult<Value> {
+    let (host, _) = parse_invite(&link)?;
+    let mut info = api::request(&host, None, Method::GET, "/api/info", None).await?;
+    info["host"] = json!(host);
+    Ok(info)
+}
+
+#[tauri::command]
+fn os_username() -> Option<String> {
+    std::env::var("USERNAME").ok().filter(|u| !u.is_empty())
 }
 
 async fn redeem(app: &AppHandle, host: &str, code: &str, nickname: &str) -> CmdResult<SavedServer> {
@@ -59,6 +96,15 @@ async fn redeem(app: &AppHandle, host: &str, code: &str, nickname: &str) -> CmdR
 #[tauri::command]
 async fn join_server(app: AppHandle, link: String, nickname: String) -> CmdResult<SavedServer> {
     let (host, code) = parse_invite(&link)?;
+    // Already a member: keep the invite unused for someone else.
+    let saved = store::load(&app)?.into_iter().find(|s| s.host == host);
+    if let (Some(saved), Some(token)) = (saved, store::token(&host)?) {
+        match api::request(&host, Some(&token), Method::GET, "/api/me", None).await {
+            Ok(_) => return Ok(saved),
+            Err(e) if e.code == "unauthorized" => {} // kicked earlier; join anew
+            Err(e) => return Err(e),
+        }
+    }
     redeem(&app, &host, &code, &nickname).await
 }
 
@@ -146,6 +192,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             #[cfg(all(desktop, debug_assertions))]
             {
@@ -164,6 +211,9 @@ pub fn run() {
             deploy_server,
             uninstall_server,
             default_ssh_key,
+            invite_from_clipboard,
+            invite_info,
+            os_username,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -175,11 +225,16 @@ mod tests {
 
     #[test]
     fn invite_links() {
-        let (h, c) = parse_invite("voicy://join/1-2-3-4.sslip.io:7443/abc_DEF-1").unwrap();
-        assert_eq!((h.as_str(), c.as_str()), ("1-2-3-4.sslip.io:7443", "abc_DEF-1"));
-        assert!(parse_invite("  <voicy://join/host.example/code/>  ").is_ok());
+        const CODE: &str = "xNpdLBtxPcNVhfPTDyLshk5M7sPBZ16alG4pxte1RtY";
+        let (h, c) = parse_invite(&format!("voicy://join/1-2-3-4.sslip.io:7443/{CODE}")).unwrap();
+        assert_eq!((h.as_str(), c.as_str()), ("1-2-3-4.sslip.io:7443", CODE));
+        let (h, c) = parse_invite(&format!("Заходи: https://1-2-3-4.sslip.io:7443/join/{CODE} ")).unwrap();
+        assert_eq!((h.as_str(), c.as_str()), ("1-2-3-4.sslip.io:7443", CODE));
+        assert!(parse_invite(&format!("<voicy://join/host.example/{CODE}/>")).is_ok());
         assert!(parse_invite("https://evil/join").is_err());
-        assert!(parse_invite("voicy://join/host:99999/code").is_err());
-        assert!(parse_invite("voicy://join/ho st/code").is_err());
+        assert!(parse_invite(&format!("https://host.example/other/{CODE}")).is_err());
+        assert!(parse_invite("voicy://join/host.example/short").is_err());
+        assert!(parse_invite(&format!("voicy://join/host:99999/{CODE}")).is_err());
+        assert!(parse_invite(&format!("voicy://join/ho st/{CODE}")).is_err());
     }
 }

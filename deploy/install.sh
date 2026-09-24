@@ -155,6 +155,10 @@ cat > "$DIR/Caddyfile" <<'EOF'
 	handle /api/* {
 		reverse_proxy 127.0.0.1:8080
 	}
+	# Invite landing pages
+	handle /join/* {
+		reverse_proxy 127.0.0.1:8080
+	}
 	# LiveKit signalling (/rtc websocket)
 	handle {
 		reverse_proxy 127.0.0.1:7880
@@ -216,6 +220,8 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build -q -t "$IMAGE" "https://github.com/AbsoluteMode/voicy.git#main:server" >/dev/null
 fi
 compose up -d --remove-orphans
+# Config files are bind-mounted, so an upgrade has to reload them explicitly.
+compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 || compose restart caddy
 
 log "waiting for https://$PUBLIC_HOST (the first certificate can take a minute)"
 for _ in $(seq 1 60); do

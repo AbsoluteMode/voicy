@@ -1,16 +1,17 @@
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { Plus } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { CreateDialog } from "./components/CreateDialog";
 import { JoinDialog } from "./components/JoinDialog";
 import { ServerView } from "./components/ServerView";
 import { Modal } from "./components/ui";
 import { colorFor, initials } from "./components/ui";
-import { listServers, SavedServer } from "./lib/tauri";
-import { useVoice } from "./lib/voice";
+import { getSettings } from "./lib/settings";
+import { errorText, inviteFromClipboard, joinServer, listServers, SavedServer } from "./lib/tauri";
+import { useVoice, voice } from "./lib/voice";
 
-type Dialog = { kind: "choose" } | { kind: "join"; link?: string } | { kind: "create" } | null;
+type Dialog = { kind: "choose" } | { kind: "join"; link?: string; error?: string } | { kind: "create" } | null;
 
 export default function App() {
   const [servers, setServers] = useState<SavedServer[]>([]);
@@ -28,23 +29,61 @@ export default function App() {
     void reload();
   }, [reload]);
 
+  // Joining puts you straight into the voice channel.
+  const added = useCallback(
+    (s: SavedServer, connect: boolean) => {
+      setDialog(null);
+      void reload().then(() => {
+        setSelected(s.host);
+        if (connect && voice.getSnapshot().host !== s.host) void voice.connect(s.host).catch(() => {});
+      });
+    },
+    [reload],
+  );
+
+  // With a known nickname an invite needs no questions at all.
+  const handleInvite = useCallback(
+    async (link: string) => {
+      const nickname = getSettings().nickname;
+      if (!nickname) return setDialog({ kind: "join", link });
+      try {
+        added(await joinServer(link, nickname), true);
+      } catch (e) {
+        setDialog({ kind: "join", link, error: errorText(e) });
+      }
+    },
+    [added],
+  );
+
   // voicy://join/... links, whether they launched the app or arrived later.
   useEffect(() => {
     const open = (urls: string[] | null) => {
       const link = urls?.find((u) => u.startsWith("voicy://join/"));
-      if (link) setDialog({ kind: "join", link });
+      if (link) void handleInvite(link);
     };
     getCurrent().then(open).catch(() => {});
     const unlisten = onOpenUrl(open);
     return () => {
       void unlisten.then((fn) => fn());
     };
-  }, []);
+  }, [handleInvite]);
 
-  const added = (s: SavedServer) => {
-    setDialog(null);
-    void reload().then(() => setSelected(s.host));
-  };
+  // An invite copied to the clipboard (the invite page does this on
+  // download) opens the join form by itself, on start and on focus.
+  const dismissed = useRef(new Set<string>());
+  useEffect(() => {
+    const check = () =>
+      inviteFromClipboard()
+        .then((link) => {
+          if (!link || dismissed.current.has(link)) return;
+          dismissed.current.add(link);
+          void handleInvite(link);
+        })
+        .catch(() => {});
+    void check();
+    window.addEventListener("focus", check);
+    return () => window.removeEventListener("focus", check);
+  }, [handleInvite]);
 
   const current = servers.find((s) => s.host === selected);
 
@@ -94,8 +133,16 @@ export default function App() {
           </div>
         </Modal>
       )}
-      {dialog?.kind === "join" && <JoinDialog initialLink={dialog.link} onClose={() => setDialog(null)} onJoined={added} />}
-      {dialog?.kind === "create" && <CreateDialog onClose={() => setDialog(null)} onCreated={added} />}
+      {dialog?.kind === "join" && (
+        <JoinDialog
+          key={dialog.link ?? ""}
+          initialLink={dialog.link}
+          initialError={dialog.error}
+          onClose={() => setDialog(null)}
+          onJoined={(s) => added(s, true)}
+        />
+      )}
+      {dialog?.kind === "create" && <CreateDialog onClose={() => setDialog(null)} onCreated={(s) => added(s, false)} />}
     </div>
   );
 }

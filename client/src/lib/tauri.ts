@@ -56,6 +56,9 @@ export const joinServer = (link: string, nickname: string) =>
   invoke<SavedServer>("join_server", { link, nickname });
 export const forgetServer = (host: string) => invoke<void>("forget_server", { host });
 export const defaultSshKey = () => invoke<string | null>("default_ssh_key");
+export const inviteFromClipboard = () => invoke<string | null>("invite_from_clipboard");
+export const inviteInfo = (link: string) => invoke<{ name: string; host: string; deleted: boolean }>("invite_info", { link });
+export const osUsername = () => invoke<string | null>("os_username");
 
 export function api<T>(host: string, method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown) {
   return invoke<T>("api_request", { host, method, path, body: body ?? null });
