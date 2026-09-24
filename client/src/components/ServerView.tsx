@@ -1,30 +1,23 @@
-import {
-  Ear,
-  EarOff,
-  Headphones,
-  HeadphoneOff,
-  LogOut,
-  Maximize2,
-  Mic,
-  MicOff,
-  MonitorUp,
-  MoreVertical,
-  Pencil,
-  PhoneOff,
-  Settings,
-  Shield,
-  ShieldOff,
-  Trash2,
-  UserMinus,
-  UserPlus,
-  Volume2,
-} from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Circle, LogOut, Maximize2, Pencil, Shield, ShieldOff, Trash2, UserMinus } from "lucide-react";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
 
 import { updateSettings, useSettings } from "../lib/settings";
 import { api, errorCode, errorText, forgetServer, Member, Role, RoomInfo, SavedServer } from "../lib/tauri";
-import { AudioStats, EndReason, NET_BAD, Peer, PeerNet, ScreenShare, useVoice, voice } from "../lib/voice";
+import { AudioStats, EndReason, NET_BAD, Peer, ScreenShare, useVoice, voice } from "../lib/voice";
 import { DeleteDialog } from "./DeleteDialog";
+import {
+  HangUpIcon,
+  HeadphonesIcon,
+  HeadphonesOffIcon,
+  MicIcon,
+  MicOffIcon,
+  MoreIcon,
+  PhoneIcon,
+  PlusIcon,
+  ScreenIcon,
+  SlidersIcon,
+  WeakSignalIcon,
+} from "./icons";
 import { InviteDialog } from "./InviteDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import { colorFor, initials, Modal, RoleBadge } from "./ui";
@@ -36,40 +29,19 @@ const END_TEXT: Record<EndReason, string> = {
   deleted: "Владелец удалил этот сервер.",
   duplicate: "Ты подключился к этому серверу с другого устройства.",
   lost: "Связь с сервером потеряна.",
-  full: "На сервере уже максимум участников (10).",
+  full: "В комнате уже максимум участников (10).",
 };
 
-function StatsLine({ s }: { s: AudioStats }) {
-  const parts = [
+function statsTitle(s?: AudioStats) {
+  if (!s) return "";
+  return [
     s.sendKbps !== undefined && `${s.sendKbps} кбит/с`,
     s.rttMs !== undefined && `пинг ${s.rttMs} мс`,
     s.lossPct !== undefined && `потери ${s.lossPct}%`,
     s.jitterMs !== undefined && `джиттер ${s.jitterMs} мс`,
-  ].filter(Boolean);
-  if (!parts.length) return null;
-  const bad = (s.lossPct ?? 0) > 2 || (s.rttMs ?? 0) > 150;
-  return (
-    <span
-      style={{ color: bad ? "var(--warn)" : "var(--faint)" }}
-      title="Реальные цифры твоего микрофона до сервера. Битрейт примерно вдвое выше настроенного: каждый пакет несёт копию предыдущего (RED), чтобы потери не были слышны."
-    >
-      · {parts.join(" · ")}
-    </span>
-  );
-}
-
-/** How a friend's audio reaches you; warns when it is audibly unstable. */
-function NetLine({ net }: { net: PeerNet }) {
-  const bad = net.lossPct > NET_BAD.lossPct || net.repairPct > NET_BAD.repairPct;
-  return (
-    <div
-      className="peer-net"
-      style={{ color: bad ? "var(--warn)" : "var(--faint)" }}
-      title="Как звук этого человека доходит до тебя. «Рывки» — доля звука, которую пришлось восстановить или растянуть из-за потерь и неровной доставки: это и слышно как «жёваный» голос."
-    >
-      {bad ? "⚠ нестабильная связь · " : ""}потери {net.lossPct}% · рывки {net.repairPct}% · джиттер {net.jitterMs} мс
-    </div>
-  );
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /** Feeds `--level` (voice loudness, 0..1) to the element's CSS, outside React renders. */
@@ -83,35 +55,22 @@ function useVoiceLevel<T extends HTMLElement>(identity: string) {
   return ref;
 }
 
-function RoomPeerAvatar({ id, name }: { id: string; name: string }) {
-  const level = useVoiceLevel<HTMLSpanElement>(id);
-  return <span ref={level} className="mini" style={{ background: colorFor(id) }}>{initials(name)}</span>;
-}
+const LEVEL_SEGMENTS = 12;
 
-function PeerTile({ peer }: { peer: Peer }) {
-  const level = useVoiceLevel<HTMLDivElement>(peer.identity);
-  const settings = useSettings();
-  const volume = settings.volumes[peer.identity] ?? 1;
-  const setVolume = (v: number) => {
-    updateSettings({ volumes: { ...settings.volumes, [peer.identity]: v } });
-    voice.setVolume(peer.identity);
-  };
+/** Twelve segments lit by how loud this person's voice is right now. */
+function Level({ identity }: { identity: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const show = () => {
+      const lit = Math.round((voice.levels.get(identity) ?? 0) * LEVEL_SEGMENTS);
+      ref.current?.querySelectorAll("i").forEach((seg, i) => seg.classList.toggle("on", i < lit));
+    };
+    show();
+    return voice.onLevels(show);
+  }, [identity]);
   return (
-    <div className={`peer${peer.speaking ? " speaking" : ""}`}>
-      <div ref={level} className="avatar" style={{ background: colorFor(peer.identity) }}>{initials(peer.name)}</div>
-      <div className="peer-name" title={peer.name}>{peer.name}{peer.isLocal && " (ты)"}</div>
-      <div className="peer-meta">
-        <RoleBadge role={peer.role} />
-        {peer.muted && <MicOff size={14} className="muted-ico" />}
-      </div>
-      {peer.net && <NetLine net={peer.net} />}
-      {!peer.isLocal && (
-        <label className="row vol" style={{ alignItems: "center", gap: 6 }} title={`Громкость: ${Math.round(volume * 100)}%`}>
-          <Volume2 size={14} style={{ flex: "none", color: "var(--faint)" }} />
-          <input type="range" min={0} max={2} step={0.05} value={volume} onChange={(e) => setVolume(Number(e.target.value))} />
-        </label>
-      )}
-      {!peer.isLocal && <RecordButton identity={peer.identity} />}
+    <div ref={ref} className="lvl" aria-hidden>
+      {Array.from({ length: LEVEL_SEGMENTS }, (_, i) => <i key={i} />)}
     </div>
   );
 }
@@ -122,27 +81,21 @@ function PeerTile({ peer }: { peer: Peer }) {
  */
 function RecordButton({ identity }: { identity: string }) {
   const [left, setLeft] = useState(0);
-  const [saved, setSaved] = useState("");
-  const [error, setError] = useState("");
+  const [done, setDone] = useState("");
   const record = async () => {
-    setSaved("");
-    setError("");
+    setDone("");
     try {
-      setSaved(await voice.recordPeer(identity, 15, setLeft));
+      setDone(`Сохранено: ${await voice.recordPeer(identity, 15, setLeft)}`);
     } catch (e) {
-      setError(errorText(e));
+      setDone(`Не удалось записать: ${errorText(e)}`);
     } finally {
       setLeft(0);
     }
   };
-  if (left > 0) return <div className="peer-net" style={{ color: "var(--danger)" }}>● запись… {left} с</div>;
+  if (left > 0) return <span className="rec-live">● {left}</span>;
   return (
-    <button
-      className="linklike peer-net"
-      onClick={record}
-      title={saved ? `Сохранено: ${saved}` : error || "Записать 15 секунд, как этот человек звучит у тебя, в «Загрузки»"}
-    >
-      {saved ? "✓ сохранено в «Загрузки»" : error ? "не удалось записать" : "⏺ записать 15 с"}
+    <button className="icon-btn sm" onClick={record} title={done || "Записать 15 секунд, как этот человек звучит у тебя, в «Загрузки»"} aria-label="Записать звук">
+      <Circle size={12} />
     </button>
   );
 }
@@ -153,17 +106,95 @@ function ScreenTile({ screen }: { screen: ScreenShare }) {
     const element = video.current;
     if (!element) return;
     screen.track.attach(element);
-    return () => { screen.track.detach(element); };
+    return () => void screen.track.detach(element);
   }, [screen.track]);
+  const fullscreen = () => void video.current?.requestFullscreen();
   return (
     <div className="screen-tile">
-      <div className="screen-title">
-        <MonitorUp size={16} /> Экран: {screen.name}{screen.isLocal && " (ты)"}
-        <button className="icon-btn sm" title="На весь экран" aria-label={`Показ ${screen.name} на весь экран`} onClick={() => void video.current?.requestFullscreen()}>
-          <Maximize2 size={15} />
+      <video ref={video} autoPlay playsInline muted onDoubleClick={fullscreen} />
+      <div className="screen-bar">
+        <span className="screen-who">{screen.name}{screen.isLocal && " · ты"}</span>
+        <button className="icon-btn sm" title="На весь экран (двойной клик)" aria-label="На весь экран" onClick={fullscreen}>
+          <Maximize2 size={14} />
         </button>
       </div>
-      <video ref={video} autoPlay playsInline muted={screen.isLocal} onDoubleClick={() => void video.current?.requestFullscreen()} />
+    </div>
+  );
+}
+
+/**
+ * One person in the call. Volume lives under the mouse wheel (right click
+ * resets it) and is only shown when it is not 100% or while changing it.
+ * Network numbers appear only when the connection is audibly bad.
+ */
+function PeerRow({ peer, actions }: { peer: Peer; actions?: ReactNode }) {
+  const level = useVoiceLevel<HTMLDivElement>(peer.identity);
+  const settings = useSettings();
+  const volume = settings.volumes[peer.identity] ?? 1;
+  const [touched, setTouched] = useState(false);
+  const hide = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const setVolume = (v: number) => {
+    const next = Math.round(Math.max(0, Math.min(2, v)) * 20) / 20;
+    updateSettings({ volumes: { ...settings.volumes, [peer.identity]: next } });
+    voice.setVolume(peer.identity);
+    setTouched(true);
+    clearTimeout(hide.current);
+    hide.current = setTimeout(() => setTouched(false), 1200);
+  };
+
+  const onWheel = (e: WheelEvent) => {
+    if (peer.isLocal) return;
+    setVolume(volume + (e.deltaY < 0 ? 0.05 : -0.05));
+  };
+
+  const net = peer.net;
+  const bad = !!net && (net.lossPct > NET_BAD.lossPct || net.repairPct > NET_BAD.repairPct);
+
+  return (
+    <div
+      className="prow"
+      onWheel={onWheel}
+      onContextMenu={(e) => {
+        if (peer.isLocal) return;
+        e.preventDefault();
+        setVolume(1);
+      }}
+      title={peer.isLocal ? undefined : `Громкость ${Math.round(volume * 100)}% · колесо мыши — изменить, правый клик — сбросить`}
+    >
+      <div ref={level} className={`av${peer.speaking ? " speaking" : ""}`} style={{ background: colorFor(peer.identity) }}>
+        {initials(peer.name)}
+      </div>
+      <div className="who">
+        <div className="name">
+          {peer.name}
+          {peer.isLocal && <span className="me"> · ты</span>}
+        </div>
+        {bad && net && (
+          <div className="problem" title={`потери ${net.lossPct}% · рывки ${net.repairPct}% · джиттер ${net.jitterMs} мс`}>
+            рвётся звук · потери {net.lossPct}%
+          </div>
+        )}
+      </div>
+      <div className="acts">
+        {!peer.isLocal && <RecordButton identity={peer.identity} />}
+        {actions}
+      </div>
+      <RoleBadge role={peer.role} />
+      {!peer.isLocal && (volume !== 1 || touched) && (
+        <span className={`vol${touched ? " show" : ""}`}>{Math.round(volume * 100)}%</span>
+      )}
+      {peer.muted ? (
+        <span className="state-ico" aria-label="Микрофон выключен" title="Микрофон выключен">
+          <MicOffIcon size={13} />
+        </span>
+      ) : bad ? (
+        <span className="state-ico warn" aria-label="Нестабильная связь">
+          <WeakSignalIcon size={13} />
+        </span>
+      ) : (
+        <Level identity={peer.identity} />
+      )}
     </div>
   );
 }
@@ -174,9 +205,9 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
   const connected = here && v.state !== "idle";
   const [members, setMembers] = useState<Member[]>([]);
   const [role, setRole] = useState<Role>(server.role);
+  const [name, setName] = useState(server.name);
   const [fatal, setFatal] = useState<"unauthorized" | "gone" | null>(null);
   const [dialog, setDialog] = useState<null | "invite" | "settings" | "delete" | "rename">(null);
-  const [name, setName] = useState(server.name);
   const [menu, setMenu] = useState(false);
   const [error, setError] = useState("");
   const [shareBusy, setShareBusy] = useState(false);
@@ -226,7 +257,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
     return () => clearInterval(t);
   }, [loadMembers]);
 
-  const roleById = useMemo(() => new Map(members.map((m) => [m.id, m.role])), [members]);
+  const byId = useMemo(() => new Map(members.map((m) => [m.id, m])), [members]);
 
   useEffect(() => {
     if (!here || !v.endReason) return;
@@ -256,11 +287,12 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
     return () => clearTimeout(t);
   }, [myRoom, peerKey, loadRooms]);
 
-  const online = useMemo(() => {
+  const inVoice = useMemo(() => {
     const ids = new Set(rooms.flatMap((r) => r.participants.map((p) => p.id)));
     if (here) v.peers.forEach((p) => ids.add(p.identity));
     return ids;
   }, [rooms, here, v.peers]);
+  const away = members.filter((m) => !inVoice.has(m.id));
 
   async function join(roomId: string) {
     setError("");
@@ -272,7 +304,11 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
     }
   }
 
-  const roomName = (id: string | null) => rooms.find((r) => r.id === id)?.name ?? (id ? `Комната ${id.slice(1)}` : "");
+  /** The dock button: where people already are, else the empty room. */
+  const joinBest = () => {
+    const target = rooms.find((r) => r.participants.length > 0) ?? rooms[0];
+    if (target) void join(target.id);
+  };
 
   async function toggleShare() {
     setError("");
@@ -305,7 +341,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
 
   async function leave() {
     setMenu(false);
-    if (!confirm(`Выйти с сервера «${server.name}»? Вернуться можно будет только по новой ссылке.`)) return;
+    if (!confirm(`Выйти с сервера «${name}»? Вернуться можно будет только по новой ссылке.`)) return;
     try {
       await api(server.host, "DELETE", "/api/me");
     } catch (e) {
@@ -323,8 +359,8 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
           <h1>{fatal === "gone" ? "Сервер удалён" : "Доступ закрыт"}</h1>
           <p>
             {fatal === "gone"
-              ? `Владелец удалил «${server.name}».`
-              : `Тебя больше нет среди участников «${server.name}». Чтобы вернуться, попроси новую ссылку.`}
+              ? `Владелец удалил «${name}».`
+              : `Тебя больше нет среди участников «${name}». Чтобы вернуться, попроси новую ссылку.`}
           </p>
           <div className="actions">
             <button className="btn primary" onClick={forget}>Убрать из списка</button>
@@ -334,20 +370,22 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
     );
   }
 
+  const bad = (v.stats?.lossPct ?? 0) > 2 || (v.stats?.rttMs ?? 0) > 150;
+  const pingText =
+    v.state === "connected" ? (v.stats?.rttMs !== undefined ? `${v.stats.rttMs} мс` : "в сети") : v.state === "connecting" ? "подключаюсь" : "переподключаюсь";
+
   return (
     <div className="server">
       <header className="server-head">
-        <h2>{name}</h2>
-        <RoleBadge role={role} size={18} />
-        <div className="spacer" />
+        <h1>{name}</h1>
         {RANK[role] >= RANK.admin && (
-          <button className="btn primary" onClick={() => setDialog("invite")}>
-            <UserPlus size={16} /> Пригласить
+          <button className="btn primary pill" onClick={() => setDialog("invite")}>
+            <PlusIcon size={14} /> Пригласить
           </button>
         )}
         <div className="menu">
           <button className="icon-btn" onClick={() => setMenu(!menu)} aria-label="Меню сервера">
-            <MoreVertical size={18} />
+            <MoreIcon />
           </button>
           {menu && (
             <div className="menu-pop" onMouseLeave={() => setMenu(false)}>
@@ -369,126 +407,127 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
         </div>
       </header>
 
-      <section className="stage">
+      <section className="list">
         {here && v.endReason && !connected && <div className="notice">{END_TEXT[v.endReason]}</div>}
-        {error && <div className="error" style={{ marginTop: 0, marginBottom: 16 }}>{error}</div>}
-        {connected ? (
-          <>
-            {v.audioBlocked && (
-              <div className="notice">
-                Звук заблокирован. <button className="btn" onClick={() => voice.startAudio()}>Включить звук</button>
-              </div>
-            )}
-            <h2 className="stage-title">
-              <Volume2 size={18} /> {roomName(v.room)}
-            </h2>
-            {v.screens.length > 0 && (
-              <div className="screens">
-                {v.screens.map((screen) => <ScreenTile key={screen.identity} screen={screen} />)}
-              </div>
-            )}
-            <div className="peers">
-              {v.peers.map((p) => <PeerTile key={p.identity} peer={{ ...p, role: roleById.get(p.identity) ?? p.role }} />)}
-            </div>
-          </>
-        ) : (
-          <div className="stage-empty">
-            <div className="big">Куда зайдём?</div>
-            <div className="hint">Пустая комната всегда есть: зайди в неё, и появится следующая.</div>
-            <div className="room-cards">
-              {rooms.map((r) => (
-                <button key={r.id} className="room-card" onClick={() => join(r.id)} disabled={here && v.state === "connecting"}>
-                  <div className="room-card-name">
-                    <Volume2 size={16} /> {r.name}
-                  </div>
-                  <div className="room-card-who">
-                    {r.participants.length ? r.participants.map((p) => p.name).join(", ") : "пусто"}
-                  </div>
-                  <span className="btn green">
-                    <Mic size={16} /> Зайти
-                  </span>
-                </button>
-              ))}
-            </div>
+        {error && <div className="error">{error}</div>}
+        {connected && v.audioBlocked && (
+          <div className="notice">
+            Звук заблокирован. <button className="btn" onClick={() => voice.startAudio()}>Включить звук</button>
           </div>
         )}
-      </section>
+        {connected && v.screens.length > 0 && (
+          <div className="screens">
+            {v.screens.map((s) => <ScreenTile key={s.identity} screen={s} />)}
+          </div>
+        )}
 
-      <aside className="members">
-        <h3>Комнаты</h3>
         {rooms.map((r) => {
           const mine = r.id === myRoom;
-          // Our own room is live from LiveKit; others come from the poll.
-          const people = mine ? v.peers.map((p) => ({ id: p.identity, name: p.name, speaking: p.speaking })) : r.participants;
+          // Our own room is live from LiveKit; the others come from the poll.
+          const count = mine ? v.peers.length : r.participants.length;
           return (
             <div key={r.id} className={`room${mine ? " mine" : ""}`}>
-              <button className="room-head" onClick={() => !mine && join(r.id)} title={mine ? "Ты здесь" : `Зайти в «${r.name}»`}>
-                <Volume2 size={15} />
-                <span>{r.name}</span>
-                {people.length === 0 && <small>пусто</small>}
+              <button
+                className="room-head"
+                onClick={() => !mine && join(r.id)}
+                disabled={mine || (here && v.state === "connecting")}
+                title={mine ? "Ты здесь" : `Зайти в «${r.name}»`}
+              >
+                <span className="sec-label">{r.name}</span>
+                <span className="room-count">{count === 0 ? "пусто · зайти" : mine ? `${count}` : `${count} · зайти`}</span>
               </button>
-              {people.map((p) => (
-                <div key={p.id} className={`room-peer${"speaking" in p && p.speaking ? " speaking" : ""}`}>
-                  <RoomPeerAvatar id={p.id} name={p.name} />
-                  {p.name}
-                </div>
-              ))}
+              {mine
+                ? v.peers.map((p) => {
+                    const m = byId.get(p.identity);
+                    return (
+                      <PeerRow
+                        key={p.identity}
+                        peer={{ ...p, role: m?.role ?? p.role }}
+                        actions={m && canManage(m) ? memberActions(m) : undefined}
+                      />
+                    );
+                  })
+                : r.participants.map((p) => (
+                    <div className="mrow" key={p.id}>
+                      <div className="av off" style={{ background: colorFor(p.id) }}>{initials(p.name)}</div>
+                      <div className="name">{p.name}</div>
+                      <RoleBadge role={byId.get(p.id)?.role} />
+                    </div>
+                  ))}
             </div>
           );
         })}
-        <h3 style={{ marginTop: 18 }}>Участники: {members.length}</h3>
-        {members.map((m) => memberRow(m, online.has(m.id)))}
-      </aside>
 
-      <footer className="controls">
-        <div className="status">
+        {away.length > 0 && (
+          <>
+            <div className="sec-label" style={{ marginTop: 6 }}>Не в голосе · {away.length}</div>
+            {away.map((m) => (
+              <div className="mrow" key={m.id}>
+                <div className="av off">{initials(m.nickname)}</div>
+                <div className="name">
+                  {m.nickname}
+                  {m.id === server.member_id && <span style={{ color: "var(--faint)" }}> · ты</span>}
+                </div>
+                {canManage(m) && memberActions(m)}
+                <RoleBadge role={m.role} />
+              </div>
+            ))}
+          </>
+        )}
+      </section>
+
+      <footer className="dock-wrap">
+        <div className="dock">
+          {connected && (
+            <div className={`ping${v.state !== "connected" ? " wait" : bad ? " warn" : ""}`} title={statsTitle(v.stats)}>
+              <i /> {pingText}
+            </div>
+          )}
+          <button
+            className={`dbtn${v.micMuted ? " off" : ""}`}
+            onClick={() => voice.toggleMic()}
+            aria-label={v.micMuted ? "Включить микрофон" : "Выключить микрофон"}
+            title={v.micMuted ? "Включить микрофон" : "Выключить микрофон"}
+          >
+            {v.micMuted ? <MicOffIcon /> : <MicIcon />}
+          </button>
+          <button
+            className={`dbtn${v.deafened ? " off" : ""}`}
+            onClick={() => voice.toggleDeafen()}
+            aria-label={v.deafened ? "Включить звук" : "Выключить звук"}
+            title={v.deafened ? "Включить звук" : "Выключить звук"}
+          >
+            {v.deafened ? <HeadphonesOffIcon /> : <HeadphonesIcon />}
+          </button>
+          {connected && (
+            <button
+              className={`dbtn${v.screenSharing ? " on" : ""}`}
+              onClick={() => void toggleShare()}
+              disabled={v.state !== "connected" || shareBusy}
+              aria-label={v.screenSharing ? "Остановить демонстрацию" : "Показать экран"}
+              title={v.screenSharing ? "Остановить демонстрацию" : "Показать экран"}
+            >
+              <ScreenIcon />
+            </button>
+          )}
+          <button className="dbtn ghost" onClick={() => setDialog("settings")} aria-label="Настройки" title="Настройки">
+            <SlidersIcon />
+          </button>
           {connected ? (
-            <>
-              <span className={`pulse${v.state === "connected" ? "" : " warn"}`} />
-              {v.state === "connected" ? "Голос подключён" : v.state === "connecting" ? "Подключаюсь…" : "Переподключаюсь…"}
-              {v.stats && <StatsLine s={v.stats} />}
-            </>
+            <button className="dbtn hang" onClick={() => voice.disconnect()} aria-label="Отключиться" title="Отключиться">
+              <HangUpIcon />
+            </button>
           ) : (
-            <span>Не в голосе · {server.nickname}</span>
+            <button className="dbtn join" onClick={joinBest} disabled={(here && v.state === "connecting") || rooms.length === 0}>
+              <PhoneIcon size={18} /> Подключиться
+            </button>
           )}
         </div>
-        <button className={`icon-btn${v.micMuted ? " off" : ""}`} onClick={() => voice.toggleMic()} title={v.micMuted ? "Включить микрофон" : "Выключить микрофон"}>
-          {v.micMuted ? <MicOff size={18} /> : <Mic size={18} />}
-        </button>
-        <button className={`icon-btn${v.deafened ? " off" : ""}`} onClick={() => voice.toggleDeafen()} title={v.deafened ? "Включить звук" : "Выключить звук"}>
-          {v.deafened ? <HeadphoneOff size={18} /> : <Headphones size={18} />}
-        </button>
-        {connected && (
-          <button
-            className={`icon-btn${v.screenSharing ? " on" : ""}`}
-            onClick={() => void toggleShare()}
-            disabled={v.state !== "connected" || shareBusy}
-            title={v.screenSharing ? "Остановить демонстрацию" : "Показать экран"}
-          >
-            <MonitorUp size={18} />
-          </button>
-        )}
-        {connected && (
-          <button
-            className={`icon-btn${v.echo ? " on" : ""}`}
-            onClick={() => void voice.setEcho(!v.echo).catch(handleError)}
-            title={v.echo ? "Выключить эхо-тест" : "Эхо-тест: услышать себя так, как слышат друзья (только в наушниках)"}
-          >
-            {v.echo ? <EarOff size={18} /> : <Ear size={18} />}
-          </button>
-        )}
-        <button className="icon-btn" onClick={() => setDialog("settings")} title="Настройки">
-          <Settings size={18} />
-        </button>
-        {connected && (
-          <button className="icon-btn hang" onClick={() => voice.disconnect()} title="Отключиться">
-            <PhoneOff size={18} />
-          </button>
-        )}
       </footer>
 
       {dialog === "invite" && <InviteDialog host={server.host} onClose={() => setDialog(null)} />}
       {dialog === "settings" && <SettingsDialog onClose={() => setDialog(null)} />}
+      {dialog === "delete" && <DeleteDialog server={server} onClose={() => setDialog(null)} onDeleted={forget} />}
       {dialog === "rename" && (
         <RenameDialog
           host={server.host}
@@ -501,42 +540,30 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
           }}
         />
       )}
-      {dialog === "delete" && <DeleteDialog server={server} onClose={() => setDialog(null)} onDeleted={forget} />}
     </div>
   );
 
-  function memberRow(m: Member, online: boolean) {
+  function memberActions(m: Member) {
     return (
-      <div className="member" key={m.id}>
-        <div className="mini" style={{ background: colorFor(m.id) }}>
-          {initials(m.nickname)}
-          {online && <span className="dot" />}
-        </div>
-        <div className="who">
-          <div>{m.nickname}{m.id === server.member_id && " (ты)"}</div>
-        </div>
-        <RoleBadge role={m.role} />
-        {canManage(m) && (
-          <div className="acts">
-            {role === "owner" &&
-              (m.role === "admin" ? (
-                <button className="icon-btn sm" title="Снять админа" onClick={() => act(() => api(server.host, "POST", `/api/members/${m.id}/role`, { role: "member" }))}>
-                  <ShieldOff size={15} />
-                </button>
-              ) : (
-                <button className="icon-btn sm" title="Сделать админом" onClick={() => act(() => api(server.host, "POST", `/api/members/${m.id}/role`, { role: "admin" }))}>
-                  <Shield size={15} />
-                </button>
-              ))}
-            <button
-              className="icon-btn sm"
-              title="Выгнать"
-              onClick={() => confirm(`Выгнать ${m.nickname}? Вернуться можно будет только по новой ссылке.`) && act(() => api(server.host, "POST", `/api/members/${m.id}/kick`))}
-            >
-              <UserMinus size={15} />
+      <div className="acts">
+        {role === "owner" &&
+          (m.role === "admin" ? (
+            <button className="icon-btn sm" title="Снять админа" aria-label="Снять админа" onClick={() => act(() => api(server.host, "POST", `/api/members/${m.id}/role`, { role: "member" }))}>
+              <ShieldOff size={14} />
             </button>
-          </div>
-        )}
+          ) : (
+            <button className="icon-btn sm" title="Сделать админом" aria-label="Сделать админом" onClick={() => act(() => api(server.host, "POST", `/api/members/${m.id}/role`, { role: "admin" }))}>
+              <Shield size={14} />
+            </button>
+          ))}
+        <button
+          className="icon-btn sm"
+          title="Выгнать"
+          aria-label="Выгнать"
+          onClick={() => confirm(`Выгнать ${m.nickname}? Вернуться можно будет только по новой ссылке.`) && act(() => api(server.host, "POST", `/api/members/${m.id}/kick`))}
+        >
+          <UserMinus size={14} />
+        </button>
       </div>
     );
   }

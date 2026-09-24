@@ -1,12 +1,12 @@
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { Download, Plus } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { CreateDialog } from "./components/CreateDialog";
 import { JoinDialog } from "./components/JoinDialog";
+import { DownloadIcon, Logo, PlusIcon } from "./components/icons";
 import { ServerView } from "./components/ServerView";
 import { Modal } from "./components/ui";
-import { colorFor, initials } from "./components/ui";
+import { initials } from "./components/ui";
 import { applyHotkeys } from "./lib/hotkeys";
 import { getSettings, useSettings } from "./lib/settings";
 import { api, errorText, inviteFromClipboard, joinServer, listServers, RoomInfo, SavedServer } from "./lib/tauri";
@@ -20,9 +20,10 @@ function Welcome({ onInvite, onCreate }: { onInvite: (link: string) => void; onC
   const [link, setLink] = useState("");
   return (
     <div className="welcome">
-      <div style={{ width: "min(460px, 100%)" }}>
-        <h1>Voicy</h1>
-        <p style={{ margin: "0 auto 24px" }}>Голосовой чат для своих. Друг прислал ссылку? Вставь её сюда.</p>
+      <div style={{ width: "min(380px, 100%)" }}>
+        <div className="logo-big"><Logo size={64} /></div>
+        <h1>voicy</h1>
+        <p style={{ margin: "0 auto 22px" }}>Голосовой чат для своих. Друг прислал ссылку? Вставь её сюда.</p>
         <form
           className="linkbox"
           onSubmit={(e) => {
@@ -31,15 +32,31 @@ function Welcome({ onInvite, onCreate }: { onInvite: (link: string) => void; onC
           }}
         >
           <input type="text" autoFocus placeholder="https://…/join/…" value={link} onChange={(e) => setLink(e.target.value)} />
-          <button className="btn primary" disabled={!link.trim()}>Войти</button>
+          <button className="btn green" disabled={!link.trim()}>Войти</button>
         </form>
-        <p style={{ marginTop: 28, fontSize: 13 }}>
+        <p style={{ marginTop: 24, fontSize: 13 }}>
           Хочешь свой сервер?{" "}
           <button className="linklike" onClick={onCreate}>Создать на своём VPS</button>
         </p>
       </div>
     </div>
   );
+}
+
+/** Lights up the dot grid under the cursor. Writes CSS variables directly,
+ *  so moving the mouse never re-renders React. */
+function useSpotlight() {
+  const ref = useRef<HTMLElement>(null);
+  const move = useCallback((e: MouseEvent) => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    el.style.setProperty("--mx", `${e.clientX - r.left}px`);
+    el.style.setProperty("--my", `${e.clientY - r.top}px`);
+    el.style.setProperty("--on", "1");
+  }, []);
+  const leave = useCallback(() => ref.current?.style.setProperty("--on", "0"), []);
+  return { ref, onMouseMove: move, onMouseLeave: leave };
 }
 
 export default function App() {
@@ -125,24 +142,25 @@ export default function App() {
   }, []);
 
   // Global shortcuts live for the whole app, not just the settings dialog.
-  const { hotkeys } = useSettings();
+  const { hotkeys, pushToTalk } = useSettings();
   useEffect(() => {
     void applyHotkeys();
-  }, [hotkeys]);
+  }, [hotkeys, pushToTalk]);
 
   const update = useUpdater();
   const startUpdate = () => confirmAndInstall(v.state !== "idle");
 
   const current = servers.find((s) => s.host === selected);
+  const spot = useSpotlight();
 
   return (
     <div className="app">
-      <nav className="rail">
+      <nav className="rail" aria-label="Серверы">
+        <div className="rail-logo" title="Voicy"><Logo size={30} /></div>
         {servers.map((s) => (
           <button
             key={s.host}
             className={`rail-btn${s.host === selected ? " active" : ""}`}
-            style={s.host === selected ? undefined : { background: colorFor(s.host) + "33" }}
             title={s.name}
             onClick={() => setSelected(s.host)}
           >
@@ -150,18 +168,18 @@ export default function App() {
             {v.host === s.host && v.state !== "idle" && <span className="live" />}
           </button>
         ))}
-        {servers.length > 0 && <div className="rail-sep" />}
-        <button className="rail-btn add" title="Добавить сервер" onClick={() => setDialog({ kind: "choose" })}>
-          <Plus size={22} />
+        <button className="rail-btn add" title="Добавить сервер" aria-label="Добавить сервер" onClick={() => setDialog({ kind: "choose" })}>
+          <PlusIcon size={16} />
         </button>
         <div className="rail-spacer" />
         {update.kind === "available" && (
           <button
             className={`rail-btn update${update.error ? " failed" : ""}`}
             title={update.error ? `Не удалось обновиться: ${update.error}. Нажми, чтобы повторить.` : `Обновить Voicy до ${update.version}`}
+            aria-label="Обновить Voicy"
             onClick={startUpdate}
           >
-            <Download size={22} />
+            <DownloadIcon size={17} />
           </button>
         )}
         {update.kind === "installing" && (
@@ -171,7 +189,7 @@ export default function App() {
         )}
       </nav>
 
-      <main className="main">
+      <main className="main" {...spot}>
         {current ? (
           <ServerView key={current.host} server={current} onChanged={reload} onRemoved={reload} />
         ) : (
@@ -182,7 +200,7 @@ export default function App() {
       {dialog?.kind === "choose" && (
         <Modal title="Добавить сервер" onClose={() => setDialog(null)}>
           <div className="row">
-            <button className="btn primary big" onClick={() => setDialog({ kind: "join" })}>По ссылке</button>
+            <button className="btn green big" onClick={() => setDialog({ kind: "join" })}>По ссылке</button>
             <button className="btn big" onClick={() => setDialog({ kind: "create" })}>Создать свой</button>
           </div>
         </Modal>

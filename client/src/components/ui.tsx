@@ -42,7 +42,8 @@ export function Toggle(props: { title: string; desc?: string; checked: boolean; 
   );
 }
 
-const PALETTE = ["#7c6cff", "#2fb6ff", "#ff6b9d", "#ff9f43", "#20c997", "#e056fd", "#4dabf7", "#f06595"];
+// Light pastels: initials sit on them in near-black.
+const PALETTE = ["#ffab85", "#8cb8ff", "#d2a8ff", "#7fe3b5", "#ffd479", "#ff9fc4", "#9be7f0", "#c6b8ff"];
 
 export function colorFor(key: string) {
   let h = 0;
@@ -58,8 +59,8 @@ export function initials(name: string) {
 
 const ROLE_ICONS: Record<Role, { Icon: typeof Crown; color: string; title: string }> = {
   owner: { Icon: Crown, color: "#ffc53d", title: "Владелец" },
-  admin: { Icon: ShieldCheck, color: "var(--accent-2)", title: "Админ" },
-  member: { Icon: Headphones, color: "#3fd0c9", title: "Участник" },
+  admin: { Icon: ShieldCheck, color: "var(--accent)", title: "Админ" },
+  member: { Icon: Headphones, color: "var(--faint)", title: "Участник" },
 };
 
 /** Role as a small icon; the name shows on hover. */

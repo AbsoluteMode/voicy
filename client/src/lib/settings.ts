@@ -15,6 +15,8 @@ export interface AudioSettings {
   nickname: string;
   /** Global shortcuts in accelerator form ("Ctrl+Shift+KeyM"); null = unset. */
   hotkeys: Hotkeys;
+  /** Push-to-talk mode: the mic is live only while the ptt key is held. */
+  pushToTalk: boolean;
   /** Bumped when a default changes and old saved settings must follow. */
   version: number;
 }
@@ -22,7 +24,7 @@ export interface AudioSettings {
 export interface Hotkeys {
   mute: string | null;
   deafen: string | null;
-  /** Push-to-talk: the mic is live only while this is held. */
+  /** Push-to-talk key, used when push-to-talk mode is on. */
   ptt: string | null;
 }
 
@@ -40,6 +42,7 @@ const DEFAULTS: AudioSettings = {
   volumes: {},
   nickname: "",
   hotkeys: { mute: "Ctrl+Shift+KeyM", deafen: "Ctrl+Shift+KeyD", ptt: null },
+  pushToTalk: false,
   version: 3,
 };
 
@@ -71,6 +74,8 @@ function read(): AudioSettings {
       saved.autoGainControl = false;
       saved.version = 3;
     }
+    // 0.1.10 turned push-to-talk on by assigning its key.
+    if (saved.pushToTalk === undefined) saved.pushToTalk = Boolean(saved.hotkeys?.ptt);
     return { ...DEFAULTS, ...saved, hotkeys: { ...DEFAULTS.hotkeys, ...saved.hotkeys } };
   } catch {
     return DEFAULTS;
