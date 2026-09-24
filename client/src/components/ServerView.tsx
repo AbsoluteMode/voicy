@@ -91,7 +91,39 @@ function PeerTile({ peer }: { peer: Peer }) {
           <input type="range" min={0} max={2} step={0.05} value={volume} onChange={(e) => setVolume(Number(e.target.value))} />
         </label>
       )}
+      {!peer.isLocal && <RecordButton identity={peer.identity} />}
     </div>
+  );
+}
+
+/**
+ * Saves 15 s of how this friend sounds here, with network stats, to
+ * Downloads: something to send along when "it sounds off".
+ */
+function RecordButton({ identity }: { identity: string }) {
+  const [left, setLeft] = useState(0);
+  const [saved, setSaved] = useState("");
+  const [error, setError] = useState("");
+  const record = async () => {
+    setSaved("");
+    setError("");
+    try {
+      setSaved(await voice.recordPeer(identity, 15, setLeft));
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setLeft(0);
+    }
+  };
+  if (left > 0) return <div className="peer-net" style={{ color: "var(--danger)" }}>● запись… {left} с</div>;
+  return (
+    <button
+      className="linklike peer-net"
+      onClick={record}
+      title={saved ? `Сохранено: ${saved}` : error || "Записать 15 секунд, как этот человек звучит у тебя, в «Загрузки»"}
+    >
+      {saved ? "✓ сохранено в «Загрузки»" : error ? "не удалось записать" : "⏺ записать 15 с"}
+    </button>
   );
 }
 

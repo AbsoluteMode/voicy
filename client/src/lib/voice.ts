@@ -14,7 +14,7 @@ import {
 
 import { DFN_MAX_REALTIME_FACTOR, dfnRealtimeFactor, VoicyNoiseProcessor } from "./noise";
 import { getSettings } from "./settings";
-import { api, Role } from "./tauri";
+import { api, Role, saveRecording } from "./tauri";
 
 export type ConnState = "idle" | "connecting" | "connected" | "reconnecting";
 
@@ -38,6 +38,8 @@ export interface PeerNet {
   /** Share of played audio the receiver had to invent or time-stretch:
    *  what "chewed" or robotic speech is made of. */
   repairPct: number;
+  /** Extra receive buffer we asked for because of repairs, ms. */
+  bufferMs: number;
 }
 
 /** Above either, the peer's connection is audibly unstable. */
@@ -112,6 +114,34 @@ function publishOptions(): TrackPublishOptions {
     red: true,
     stopMicTrackOnMute: false,
   };
+}
+
+/** Mono 16-bit PCM WAV. */
+function wav16(chunks: Float32Array[], rate: number): Uint8Array {
+  const n = chunks.reduce((a, c) => a + c.length, 0);
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const str = (o: number, s: string) => [...s].forEach((ch, i) => v.setUint8(o + i, ch.charCodeAt(0)));
+  str(0, "RIFF");
+  v.setUint32(4, 36 + n * 2, true);
+  str(8, "WAVEfmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true);
+  v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  str(36, "data");
+  v.setUint32(40, n * 2, true);
+  let o = 44;
+  for (const c of chunks) {
+    for (const s of c) {
+      v.setInt16(o, Math.max(-1, Math.min(1, s)) * 0x7fff, true);
+      o += 2;
+    }
+  }
+  return new Uint8Array(buf);
 }
 
 function roleOf(p: Participant): Role | undefined {
@@ -367,14 +397,71 @@ class VoiceSession {
         if (!prev) return;
         const packets = now.got - prev.got + (now.lost - prev.lost);
         const samples = now.samples - prev.samples;
+        const repairPct = samples > 0 ? Math.round(((now.repaired - prev.repaired) / samples) * 1000) / 10 : 0;
         this.peerNet.set(p.identity, {
           lossPct: packets > 0 ? Math.round(((now.lost - prev.lost) / packets) * 1000) / 10 : 0,
           jitterMs: Math.round((r.jitter ?? 0) * 1000),
-          repairPct: samples > 0 ? Math.round(((now.repaired - prev.repaired) / samples) * 1000) / 10 : 0,
+          repairPct,
+          bufferMs: this.adaptBuffer(p.identity, receiver, repairPct),
         });
       });
     }
     this.refresh();
+  }
+
+  private bufferTarget = new Map<string, { ms: number; calm: number }>();
+
+  /**
+   * A jittery link makes the receiver speed speech up and slow it down to
+   * keep playing, which sounds unsteady. When that happens, ask for a deeper
+   * buffer: a little more delay, steady speech. Back off after calm spells.
+   */
+  private adaptBuffer(identity: string, receiver: RTCRtpReceiver, repairPct: number): number {
+    const r = receiver as RTCRtpReceiver & { jitterBufferTarget?: number | null };
+    if (!("jitterBufferTarget" in r)) return 0;
+    const cur = this.bufferTarget.get(identity) ?? { ms: 0, calm: 0 };
+    let ms = cur.ms;
+    let calm = cur.calm;
+    if (repairPct > NET_BAD.repairPct) {
+      ms = Math.min(ms + 40, 240);
+      calm = 0;
+    } else if (repairPct < 0.5 && ms > 0 && ++calm >= 20) {
+      ms = Math.max(0, ms - 20);
+      calm = 0;
+    }
+    if (ms !== cur.ms) r.jitterBufferTarget = ms || null;
+    this.bufferTarget.set(identity, { ms, calm });
+    return ms;
+  }
+
+  /**
+   * Records how a friend actually sounds here, after the network and the
+   * receiver, to a WAV in Downloads with a per-second stats timeline.
+   */
+  async recordPeer(identity: string, seconds: number, onTick: (left: number) => void): Promise<string> {
+    const p = this.room?.remoteParticipants.get(identity);
+    const track = p?.getTrackPublication(Track.Source.Microphone)?.track;
+    if (!p || !track) throw new Error("у участника сейчас нет звука");
+    const ctx = new AudioContext({ sampleRate: 48000 });
+    const worklet = `class R extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0][0];if(c)this.port.postMessage(c.slice(0));return true}}registerProcessor("voicy-recorder",R)`;
+    const url = URL.createObjectURL(new Blob([worklet], { type: "application/javascript" }));
+    await ctx.audioWorklet.addModule(url);
+    URL.revokeObjectURL(url);
+    const node = new AudioWorkletNode(ctx, "voicy-recorder", { numberOfOutputs: 0 });
+    const chunks: Float32Array[] = [];
+    node.port.onmessage = (e) => chunks.push(e.data as Float32Array);
+    const src = ctx.createMediaStreamSource(new MediaStream([track.mediaStreamTrack]));
+    src.connect(node);
+    const timeline: unknown[] = [];
+    for (let left = seconds; left > 0; left--) {
+      onTick(left);
+      await new Promise((r) => setTimeout(r, 1000));
+      timeline.push({ t: seconds - left + 1, ...this.peerNet.get(identity) });
+    }
+    src.disconnect();
+    await ctx.close();
+    const stats = JSON.stringify({ name: p.name, identity, seconds, settings: getSettings(), timeline }, null, 1);
+    return saveRecording(p.name || identity, wav16(chunks, 48000), stats);
   }
 
   private async sampleStats() {

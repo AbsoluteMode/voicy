@@ -2,11 +2,13 @@
 // so cleaning happens here, before encoding:
 //
 //   mic → getUserMedia (Chromium AEC if enabled; its NS and AGC stay off)
-//       → [RNNoise | DeepFilterNet3] in a 48 kHz AudioWorklet → Opus
+//       → mono → [DeepFilterNet3 | RNNoise] → gate, in a 48 kHz AudioContext → Opus
 //
-// DeepFilterNet3 keeps the voice fullband and natural while removing
-// non-stationary noise (keyboard, TV, kids). RNNoise is the light mode for
-// weak CPUs. Model files ship with the app, see scripts/fetch-ns-assets.mjs.
+// Strong mask-based suppression makes the voice itself waver, so
+// DeepFilterNet only turns the background down gently while speaking, and
+// the gate makes the pauses silent. RNNoise is the fallback for machines
+// too slow for DeepFilterNet. Model files ship with the app, see
+// scripts/fetch-ns-assets.mjs.
 
 import { loadRnnoise, RnnoiseWorkletNode } from "@sapphi-red/web-noise-suppressor";
 import rnnoiseWorkletUrl from "@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url";
@@ -15,20 +17,91 @@ import rnnoiseSimdUrl from "@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?u
 import { AssetLoader, DeepFilterNet3Core } from "deepfilternet3-noise-filter";
 import type { AudioProcessorOptions, Track, TrackProcessor } from "livekit-client";
 
-export type NoiseMode = "off" | "light" | "standard" | "max";
+/** `light` (RNNoise + gate) is only a fallback, not offered in settings. */
+export type NoiseMode = "off" | "soft" | "standard" | "max" | "light";
 
 export const NOISE_MODES: { mode: NoiseMode; label: string; desc: string }[] = [
-  { mode: "off", label: "Выкл", desc: "Чистый сигнал микрофона. Лучше всего для хорошего микрофона в тихой комнате." },
-  { mode: "light", label: "Лёгкое", desc: "RNNoise: убирает ровный фон (гул, вентилятор), почти не грузит процессор." },
-  { mode: "standard", label: "Стандарт", desc: "DeepFilterNet: убирает клавиатуру, ТВ, улицу, голос остаётся естественным." },
-  { mode: "max", label: "Максимум", desc: "DeepFilterNet без ограничений: между фразами полная тишина. Может резать смех и шёпот." },
+  { mode: "off", label: "Выкл", desc: "Чистый сигнал микрофона, как есть." },
+  {
+    mode: "soft",
+    label: "Мягкое",
+    desc: "Голос не обрабатывается совсем. В паузах между словами микрофон закрывается: фон и щелчки клавиатуры не слышны.",
+  },
+  {
+    mode: "standard",
+    label: "Стандарт",
+    desc: "Как «Мягкое», плюс DeepFilterNet бережно приглушает фон и во время речи. Голос остаётся ровным.",
+  },
+  {
+    mode: "max",
+    label: "Максимум",
+    desc: "DeepFilterNet на полную: убирает даже громкий фон во время речи, но голос может «плавать».",
+  },
 ];
 
 /**
- * How far DeepFilterNet may push the background down, in dB. A little
- * residual ambience in "standard" masks artifacts and sounds more natural.
+ * How far DeepFilterNet may push the background down, in dB. The deeper
+ * it may cut, the more the voice wavers with it; 18 dB keeps it steady.
  */
-const DFN_ATTENUATION_DB = { standard: 35, max: 100 } as const;
+const DFN_ATTENUATION_DB = { standard: 18, max: 100 } as const;
+
+/**
+ * Downward expander with lookahead. Opens only for sound that stays above
+ * the noise floor for K blocks (about 13 ms), which speech does and a key
+ * click does not; the D-block delay (21 ms) lets it open before the first
+ * syllable instead of clipping it. Holds for H blocks (0.2 s) between
+ * words, then fades the pause down by 30 dB. The floor adapts to the room.
+ */
+const GATE_WORKLET = `
+class VoicyGate extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.D = 8; this.K = 5; this.H = 75;
+    this.ring = new Float32Array(128 * (this.D + 1));
+    this.zero = new Float32Array(128);
+    this.blk = 0; this.streak = 0; this.last = -1e9;
+    this.gain = 0; this.closed = 0.03;
+    // Minimum statistics: the noise floor is the quietest smoothed level
+    // over the last 1.5 s. Speech always dips between syllables, so it
+    // cannot drag the floor up, and a louder room is learned in 1.5 s.
+    this.hist = new Float32Array(560).fill(0);
+    this.smooth = -90;
+  }
+  process(inputs, outputs) {
+    const out = outputs[0];
+    if (!out || !out[0]) return true;
+    const x = (inputs[0] && inputs[0][0]) || this.zero;
+    let e = 0;
+    for (let n = 0; n < 128; n++) e += x[n] * x[n];
+    const db = 10 * Math.log10(e / 128 + 1e-12);
+    this.smooth += (db - this.smooth) * 0.25;
+    this.hist[this.blk % this.hist.length] = this.smooth;
+    let floor = 0;
+    const filled = Math.min(this.blk + 1, this.hist.length);
+    for (let i = 0; i < filled; i++) if (this.hist[i] < floor) floor = this.hist[i];
+    floor = Math.min(Math.max(floor, -90), -38);
+    this.streak = db > Math.max(floor + 10, -62) ? this.streak + 1 : 0;
+    if (this.streak >= this.K) this.last = this.blk;
+    const slots = this.D + 1;
+    this.ring.set(x, (this.blk % slots) * 128);
+    const j = this.blk - this.D;
+    const open = j >= 0 && this.last >= j - this.H;
+    const target = open ? 1 : this.closed;
+    const k = target > this.gain ? 0.02 : 0.0012;
+    const r = (((j % slots) + slots) % slots) * 128;
+    const y = out[0];
+    for (let n = 0; n < 128; n++) {
+      this.gain += (target - this.gain) * k;
+      y[n] = j >= 0 ? this.ring[r + n] * this.gain : 0;
+    }
+    for (let c = 1; c < out.length; c++) out[c].set(y);
+    this.blk++;
+    return true;
+  }
+}
+registerProcessor("voicy-gate", VoicyGate);
+`;
+const gateUrl = URL.createObjectURL(new Blob([GATE_WORKLET], { type: "application/javascript" }));
 
 // The package hardcodes CDN-style paths ending in .tar.gz; point it at the
 // copies bundled with the app instead.
@@ -130,6 +203,7 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
   private dfn: DeepFilterNet3Core | null = null;
   private dfnNode: AudioWorkletNode | null = null;
   private rnnoise: RnnoiseWorkletNode | null = null;
+  private gate: AudioWorkletNode | null = null;
   private track?: MediaStreamTrack;
 
   constructor(private mode: NoiseMode) {}
@@ -158,9 +232,10 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
     this.source?.disconnect();
     this.mono?.disconnect();
     this.current?.disconnect();
+    this.gate?.disconnect();
     this.rnnoise?.destroy();
     this.dfn?.destroy();
-    this.source = this.mono = this.current = this.rnnoise = this.dfnNode = this.dfn = null;
+    this.source = this.mono = this.current = this.gate = this.rnnoise = this.dfnNode = this.dfn = null;
     await this.ctx?.close().catch(() => {});
     this.ctx = null;
   };
@@ -180,8 +255,17 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
     return this.ctx;
   }
 
+  private async gateFor(ctx: AudioContext): Promise<AudioWorkletNode> {
+    if (!this.gate) {
+      await ctx.audioWorklet.addModule(gateUrl);
+      this.gate = new AudioWorkletNode(ctx, "voicy-gate", { outputChannelCount: [1] });
+    }
+    return this.gate;
+  }
+
+  /** The suppressor for a mode; `null` where only the gate (or nothing) runs. */
   private async nodeFor(ctx: AudioContext, mode: NoiseMode): Promise<AudioNode | null> {
-    if (mode === "off") return null;
+    if (mode === "off" || mode === "soft") return null;
     if (mode === "light") {
       if (!this.rnnoise) {
         rnnoiseWasm ??= loadRnnoise({ url: rnnoiseWasmUrl, simdUrl: rnnoiseSimdUrl });
@@ -207,13 +291,19 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
     if (!this.track) throw new Error("no source track");
     const ctx = await this.context();
     const node = await this.nodeFor(ctx, this.mode);
+    const gate = this.mode === "off" ? null : await this.gateFor(ctx);
     this.source?.disconnect();
     this.mono!.disconnect();
     this.current?.disconnect();
+    this.gate?.disconnect();
     this.source = ctx.createMediaStreamSource(new MediaStream([this.track]));
     this.source.connect(this.mono!);
-    if (node) this.mono!.connect(node).connect(this.dest!);
-    else this.mono!.connect(this.dest!);
+    // mic → mono → [suppressor] → [gate] → track
+    let tail: AudioNode = this.mono!;
+    for (const next of [node, gate]) {
+      if (next) tail = tail.connect(next);
+    }
+    tail.connect(this.dest!);
     this.current = node;
   }
 }

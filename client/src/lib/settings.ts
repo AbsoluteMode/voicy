@@ -46,6 +46,8 @@ function read(): AudioSettings {
     // 0.1.0 had an on/off switch for Chromium's own suppression.
     if (typeof saved.noiseSuppression === "boolean" && !saved.noise) saved.noise = saved.noiseSuppression ? "standard" : "off";
     delete saved.noiseSuppression;
+    // RNNoise ("light") is a fallback now, no longer a choice.
+    if (saved.noise === "light") saved.noise = "soft";
     // Before version 2 echo cancellation defaulted to off and was saved as
     // such without anyone choosing it.
     if (!(saved.version >= 2)) {
