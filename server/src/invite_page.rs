@@ -34,7 +34,7 @@ pub async fn page(State(s): State<SharedState>, Path(code): Path<String>) -> imp
     };
     let host = &s.cfg.public_host;
     let html = TEMPLATE
-        .replace("{{name}}", &escape(&s.cfg.server_name))
+        .replace("{{name}}", &escape(&s.server_name()))
         .replace("{{https}}", &escape(&format!("https://{host}/join/{code}")))
         .replace("{{app}}", &escape(&format!("voicy://join/{host}/{code}")))
         .replace("{{download}}", DOWNLOAD_URL);

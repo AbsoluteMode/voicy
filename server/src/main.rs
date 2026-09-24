@@ -65,6 +65,15 @@ pub struct AppState {
     pub lk: livekit::LiveKit,
 }
 
+impl AppState {
+    pub fn server_name(&self) -> String {
+        match self.db.name() {
+            Ok(Some(name)) => name,
+            _ => self.cfg.server_name.clone(),
+        }
+    }
+}
+
 pub type SharedState = Arc<AppState>;
 
 #[tokio::main]

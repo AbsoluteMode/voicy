@@ -146,13 +146,25 @@ async fn api_request(app: AppHandle, host: String, method: String, path: String,
     let method = Method::from_bytes(method.as_bytes()).map_err(|_| CmdError::new("invalid", "bad method"))?;
     let result = api::request(&host, Some(&token), method.clone(), &path, body).await?;
 
-    // Keep the cached nickname/role fresh so the sidebar is right offline.
+    // Keep the cached nickname, role and server name fresh so the sidebar is
+    // right offline.
+    let saved = || -> CmdResult<Option<SavedServer>> { Ok(store::load(&app)?.into_iter().find(|s| s.host == host)) };
     if path == "/api/me" && method != Method::DELETE {
         if let (Some(nick), Some(role)) = (result["nickname"].as_str(), result["role"].as_str()) {
-            if let Some(mut s) = store::load(&app)?.into_iter().find(|s| s.host == host) {
+            if let Some(mut s) = saved()? {
                 if s.nickname != nick || s.role != role {
                     s.nickname = nick.to_owned();
                     s.role = role.to_owned();
+                    store::upsert(&app, s, None)?;
+                }
+            }
+        }
+    }
+    if path == "/api/info" || (path == "/api/server" && method == Method::PATCH) {
+        if let Some(name) = result["name"].as_str() {
+            if let Some(mut s) = saved()? {
+                if s.name != name {
+                    s.name = name.to_owned();
                     store::upsert(&app, s, None)?;
                 }
             }

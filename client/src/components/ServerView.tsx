@@ -7,6 +7,7 @@ import {
   Mic,
   MicOff,
   MoreVertical,
+  Pencil,
   PhoneOff,
   Settings,
   Shield,
@@ -16,7 +17,7 @@ import {
   UserPlus,
   Volume2,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import { updateSettings, useSettings } from "../lib/settings";
 import { api, errorCode, errorText, forgetServer, Member, Role, RoomInfo, SavedServer } from "../lib/tauri";
@@ -24,7 +25,7 @@ import { AudioStats, EndReason, NET_BAD, Peer, PeerNet, useVoice, voice } from "
 import { DeleteDialog } from "./DeleteDialog";
 import { InviteDialog } from "./InviteDialog";
 import { SettingsDialog } from "./SettingsDialog";
-import { colorFor, initials, RoleBadge } from "./ui";
+import { colorFor, initials, Modal, RoleBadge } from "./ui";
 
 const RANK: Record<Role, number> = { member: 0, admin: 1, owner: 2 };
 
@@ -134,7 +135,8 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
   const [members, setMembers] = useState<Member[]>([]);
   const [role, setRole] = useState<Role>(server.role);
   const [fatal, setFatal] = useState<"unauthorized" | "gone" | null>(null);
-  const [dialog, setDialog] = useState<null | "invite" | "settings" | "delete">(null);
+  const [dialog, setDialog] = useState<null | "invite" | "settings" | "delete" | "rename">(null);
+  const [name, setName] = useState(server.name);
   const [menu, setMenu] = useState(false);
   const [error, setError] = useState("");
 
@@ -146,23 +148,27 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
 
   const loadMembers = useCallback(async () => {
     try {
-      const [me, list] = await Promise.all([
+      const [me, list, info] = await Promise.all([
         api<Member>(server.host, "GET", "/api/me"),
         api<Member[]>(server.host, "GET", "/api/members"),
+        api<{ name: string }>(server.host, "GET", "/api/info"),
       ]);
       setRole(me.role);
       setMembers(list);
-      if (me.role !== server.role || me.nickname !== server.nickname) onChanged();
+      setName(info.name);
+      // The backend refreshed its cache from these; update the sidebar.
+      if (me.role !== server.role || me.nickname !== server.nickname || info.name !== server.name) onChanged();
     } catch (e) {
       handleError(e);
     }
-  }, [server.host, server.role, server.nickname, onChanged, handleError]);
+  }, [server.host, server.role, server.nickname, server.name, onChanged, handleError]);
 
   useEffect(() => {
     setFatal(null);
     setError("");
     setMembers([]);
     setRole(server.role);
+    setName(server.name);
     void loadMembers();
   }, [server.host]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -277,11 +283,8 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
   return (
     <div className="server">
       <header className="server-head">
-        <div>
-          <h2>{server.name}</h2>
-          <div className="host selectable">{server.host}</div>
-        </div>
-        <RoleBadge role={role} />
+        <h2>{name}</h2>
+        <RoleBadge role={role} size={18} />
         <div className="spacer" />
         {RANK[role] >= RANK.admin && (
           <button className="btn primary" onClick={() => setDialog("invite")}>
@@ -294,6 +297,11 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
           </button>
           {menu && (
             <div className="menu-pop" onMouseLeave={() => setMenu(false)}>
+              {RANK[role] >= RANK.admin && (
+                <button onClick={() => { setMenu(false); setDialog("rename"); }}>
+                  <Pencil size={16} /> Переименовать
+                </button>
+              )}
               {role !== "owner" && (
                 <button onClick={leave}><LogOut size={16} /> Выйти с сервера</button>
               )}
@@ -412,6 +420,18 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
 
       {dialog === "invite" && <InviteDialog host={server.host} onClose={() => setDialog(null)} />}
       {dialog === "settings" && <SettingsDialog onClose={() => setDialog(null)} />}
+      {dialog === "rename" && (
+        <RenameDialog
+          host={server.host}
+          current={name}
+          onClose={() => setDialog(null)}
+          onRenamed={(n) => {
+            setName(n);
+            setDialog(null);
+            void loadMembers();
+          }}
+        />
+      )}
       {dialog === "delete" && <DeleteDialog server={server} onClose={() => setDialog(null)} onDeleted={forget} />}
     </div>
   );
@@ -451,4 +471,37 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
       </div>
     );
   }
+}
+
+function RenameDialog(props: { host: string; current: string; onClose: () => void; onRenamed: (name: string) => void }) {
+  const [value, setValue] = useState(props.current);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const res = await api<{ name: string }>(props.host, "PATCH", "/api/server", { name: value.trim() });
+      props.onRenamed(res.name);
+    } catch (err) {
+      setError(errorText(err));
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title="Название сервера" onClose={props.onClose}>
+      <form onSubmit={save}>
+        <label className="field">
+          <span>Как назовём?</span>
+          <input type="text" autoFocus maxLength={48} value={value} onChange={(e) => setValue(e.target.value)} />
+        </label>
+        {error && <div className="error">{error}</div>}
+        <div className="foot">
+          <button type="button" className="btn" onClick={props.onClose}>Отмена</button>
+          <button className="btn primary" disabled={busy || !value.trim() || value.trim() === props.current}>Сохранить</button>
+        </div>
+      </form>
+    </Modal>
+  );
 }

@@ -1,3 +1,4 @@
+import { Crown, Headphones, ShieldCheck } from "lucide-react";
 import { ReactNode, useEffect } from "react";
 
 import { Role } from "../lib/tauri";
@@ -55,7 +56,19 @@ export function initials(name: string) {
   return s.toUpperCase() || "?";
 }
 
-export function RoleBadge({ role }: { role?: Role }) {
-  if (!role || role === "member") return null;
-  return <span className={`badge ${role}`}>{role === "owner" ? "владелец" : "админ"}</span>;
+const ROLE_ICONS: Record<Role, { Icon: typeof Crown; color: string; title: string }> = {
+  owner: { Icon: Crown, color: "#ffc53d", title: "Владелец" },
+  admin: { Icon: ShieldCheck, color: "var(--accent-2)", title: "Админ" },
+  member: { Icon: Headphones, color: "#3fd0c9", title: "Участник" },
+};
+
+/** Role as a small icon; the name shows on hover. */
+export function RoleBadge({ role, size = 15 }: { role?: Role; size?: number }) {
+  if (!role) return null;
+  const { Icon, color, title } = ROLE_ICONS[role];
+  return (
+    <span className="role-icon" title={title} aria-label={title} style={{ color }}>
+      <Icon size={size} strokeWidth={2.2} />
+    </span>
+  );
 }

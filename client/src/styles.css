@@ -118,6 +118,7 @@ button { font: inherit; color: inherit; }
 .badge.owner { background: rgba(255, 181, 71, .15); color: var(--warn); }
 .badge.admin { background: rgba(124, 108, 255, .18); color: var(--accent-2); }
 .badge.member { display: none; }
+.role-icon { display: inline-flex; align-items: center; flex: none; }
 
 /* Control bar */
 .controls {

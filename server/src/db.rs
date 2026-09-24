@@ -116,6 +116,20 @@ impl Db {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Name set in the app; the install-time name applies until then.
+    pub fn name(&self) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT value FROM meta WHERE key = 'name'", [], |r| r.get(0))
+            .optional()?)
+    }
+
+    pub fn set_name(&self, name: &str) -> Result<()> {
+        self.conn()
+            .execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('name', ?1)", [name])?;
+        Ok(())
+    }
+
     pub fn is_deleted(&self) -> Result<bool> {
         let v: Option<String> = self
             .conn()

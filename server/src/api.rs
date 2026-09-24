@@ -33,7 +33,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/members/{id}/role", post(set_role))
         .route("/api/invites", get(list_invites).post(create_invite))
         .route("/api/invites/{id}", delete(revoke_invite))
-        .route("/api/server", delete(delete_server))
+        .route("/api/server", delete(delete_server).patch(rename_server))
         .route("/api/rtc-auth", get(rtc_auth))
         .route("/join/{code}", get(crate::invite_page::page))
         .with_state(state)
@@ -50,7 +50,7 @@ fn clean_nickname(raw: &str) -> ApiResult<String> {
 
 async fn info(State(s): State<SharedState>) -> ApiResult<Json<Value>> {
     Ok(Json(json!({
-        "name": s.cfg.server_name,
+        "name": s.server_name(),
         "version": env!("CARGO_PKG_VERSION"),
         "max_participants": s.cfg.max_participants,
         "deleted": s.db.is_deleted()?,
@@ -81,7 +81,7 @@ async fn join(State(s): State<SharedState>, Json(req): Json<JoinReq>) -> ApiResu
         Redeem::Ok(member) => Ok(Json(JoinResp {
             token: format!("{}.{}", member.id, secret),
             member,
-            server_name: s.cfg.server_name.clone(),
+            server_name: s.server_name(),
         })),
         Redeem::InvalidCode => Err(ApiError::Forbidden("invite is invalid, used or expired")),
         Redeem::OwnerExists => Err(ApiError::Forbidden("server already has an owner")),
@@ -315,6 +315,27 @@ async fn rtc_auth(State(s): State<SharedState>, headers: axum::http::HeaderMap) 
         return Err(ApiError::Forbidden("not a member"));
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct RenameReq {
+    name: String,
+}
+
+async fn rename_server(
+    State(s): State<SharedState>,
+    auth: AuthMember,
+    Json(req): Json<RenameReq>,
+) -> ApiResult<Json<Value>> {
+    auth.require(Role::Admin)?;
+    let name = req.name.trim();
+    let len = name.chars().count();
+    if len == 0 || len > 48 || name.chars().any(char::is_control) {
+        return Err(ApiError::BadRequest("name must be 1-48 printable characters"));
+    }
+    s.db.set_name(name)?;
+    tracing::info!("{} renamed the server to {name:?}", auth.0.nickname);
+    Ok(Json(json!({ "name": name })))
 }
 
 async fn delete_server(State(s): State<SharedState>, auth: AuthMember) -> ApiResult<StatusCode> {
