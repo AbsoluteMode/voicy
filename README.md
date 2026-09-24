@@ -53,3 +53,8 @@ on 443.
 ## License
 
 [MIT](LICENSE)
+
+## Development review
+
+The [initial review](.project-docs/bugs/review-2026-09-24.md) records findings
+against commit `7ee4777`, reproduction steps and suggested release priorities.

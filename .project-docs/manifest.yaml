@@ -1,0 +1,18 @@
+schema_version: 1
+entrypoints:
+  project: project.md
+  navigation: navigation.md
+routes:
+  current_state:
+    - project.md
+  known_problem:
+    - bugs/
+  unresolved:
+    - open-questions.md
+search_fields:
+  - id
+  - title
+  - summary
+  - tags
+  - canonical_for
+  - related
