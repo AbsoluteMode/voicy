@@ -190,6 +190,11 @@ async fn set_role(
     outranks(&auth.0, &target)?;
     s.db.set_role(&target.id, req.role)?;
     target.role = req.role;
+    // Tokens carry the role as metadata; update it for a live session too.
+    let metadata = json!({ "role": target.role }).to_string();
+    if let Err(e) = s.lk.update_metadata(ROOM, &target.id, &metadata).await {
+        tracing::warn!("could not update {}'s metadata: {e:#}", target.id);
+    }
     Ok(Json(target))
 }
 

@@ -119,11 +119,20 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
     void loadMembers();
   }, [server.host]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Someone new in the room may be a brand-new member.
-  const peerKey = here ? v.peers.map((p) => p.identity).sort().join() : "";
+  // Someone new in the room may be a brand-new member, and a role change
+  // arrives as new participant metadata.
+  const peerKey = here ? v.peers.map((p) => `${p.identity}:${p.role}`).sort().join() : "";
   useEffect(() => {
     if (peerKey) void loadMembers();
   }, [peerKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fallback for changes made while this member is not in the room.
+  useEffect(() => {
+    const t = setInterval(() => void loadMembers(), 30_000);
+    return () => clearInterval(t);
+  }, [loadMembers]);
+
+  const roleById = useMemo(() => new Map(members.map((m) => [m.id, m.role])), [members]);
 
   useEffect(() => {
     if (!here || !v.endReason) return;
@@ -234,7 +243,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
               </div>
             )}
             <div className="peers">
-              {v.peers.map((p) => <PeerTile key={p.identity} peer={p} />)}
+              {v.peers.map((p) => <PeerTile key={p.identity} peer={{ ...p, role: roleById.get(p.identity) ?? p.role }} />)}
             </div>
           </>
         ) : (

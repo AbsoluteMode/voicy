@@ -68,6 +68,11 @@ const IDLE: VoiceSnapshot = {
   echo: false,
 };
 
+/** RMS above this (about -40 dBFS) counts as speech. */
+const SPEAKING_RMS = 0.01;
+/** Keeps the ring lit between words instead of flickering. */
+const SPEAKING_HOLD_MS = 350;
+
 function captureOptions(): AudioCaptureOptions {
   const s = getSettings();
   return {
@@ -131,7 +136,7 @@ class VoiceSession {
       name: p.name || p.identity,
       role: roleOf(p),
       isLocal: p === room.localParticipant,
-      speaking: p.isSpeaking,
+      speaking: this.speaking.has(p.identity),
       muted: !p.isMicrophoneEnabled,
     }));
     peers.sort((a, b) => Number(b.isLocal) - Number(a.isLocal) || a.name.localeCompare(b.name));
@@ -226,6 +231,7 @@ class VoiceSession {
       await this.applyNoise();
       this.refresh();
       this.startStats();
+      this.meterTimer = setInterval(this.tickMeters, 50);
     } catch (e) {
       // A newer session owns the state now; this failure is not its problem.
       if (stale()) return;
@@ -234,6 +240,80 @@ class VoiceSession {
       this.set({ ...IDLE, host, error: msg, endReason: /full|max/i.test(msg) ? "full" : undefined });
       throw e;
     }
+  }
+
+  // Speaking indicator, measured here on the actual audio. LiveKit's own
+  // active-speaker events come from the server, lag, and miss quiet speech.
+  private meters = new Map<string, { track: MediaStreamTrack; src: MediaStreamAudioSourceNode; an: AnalyserNode }>();
+  private lastLoud = new Map<string, number>();
+  private speaking = new Set<string>();
+  private meterTimer: ReturnType<typeof setInterval> | undefined;
+  private meterBuf = new Float32Array(512);
+
+  /** The audio a participant actually sends: after noise suppression for us. */
+  private audibleTrack(p: Participant): MediaStreamTrack | undefined {
+    const pub = p.getTrackPublication(Track.Source.Microphone);
+    const track = pub?.track;
+    if (!track || pub.isMuted) return undefined;
+    if (p === this.room?.localParticipant) {
+      return (track as LocalAudioTrack).getProcessor()?.processedTrack ?? track.mediaStreamTrack;
+    }
+    return track.mediaStreamTrack;
+  }
+
+  private tickMeters = () => {
+    const room = this.room;
+    const ctx = this.ctx;
+    if (!room || !ctx) return;
+    const now = performance.now();
+    const present = new Set<string>();
+    let changed = false;
+    for (const p of [room.localParticipant, ...room.remoteParticipants.values()]) {
+      present.add(p.identity);
+      const track = this.audibleTrack(p);
+      let meter = this.meters.get(p.identity);
+      if (meter && meter.track !== track) {
+        meter.src.disconnect();
+        this.meters.delete(p.identity);
+        meter = undefined;
+      }
+      if (!meter && track) {
+        const src = ctx.createMediaStreamSource(new MediaStream([track]));
+        const an = ctx.createAnalyser();
+        an.fftSize = this.meterBuf.length;
+        src.connect(an);
+        meter = { track, src, an };
+        this.meters.set(p.identity, meter);
+      }
+      if (meter) {
+        meter.an.getFloatTimeDomainData(this.meterBuf);
+        let sum = 0;
+        for (const v of this.meterBuf) sum += v * v;
+        if (Math.sqrt(sum / this.meterBuf.length) > SPEAKING_RMS) this.lastLoud.set(p.identity, now);
+      }
+      const on = now - (this.lastLoud.get(p.identity) ?? -Infinity) < SPEAKING_HOLD_MS;
+      if (on !== this.speaking.has(p.identity)) {
+        if (on) this.speaking.add(p.identity);
+        else this.speaking.delete(p.identity);
+        changed = true;
+      }
+    }
+    for (const [id, meter] of this.meters) {
+      if (!present.has(id)) {
+        meter.src.disconnect();
+        this.meters.delete(id);
+        this.speaking.delete(id);
+      }
+    }
+    if (changed) this.refresh();
+  };
+
+  private stopMeters() {
+    clearInterval(this.meterTimer);
+    this.meters.forEach((m) => m.src.disconnect());
+    this.meters.clear();
+    this.lastLoud.clear();
+    this.speaking.clear();
   }
 
   private statsTimer: ReturnType<typeof setInterval> | undefined;
@@ -313,6 +393,7 @@ class VoiceSession {
 
   private teardown() {
     this.stopEcho();
+    this.stopMeters();
     clearInterval(this.statsTimer);
     const room = this.room;
     this.room = null;

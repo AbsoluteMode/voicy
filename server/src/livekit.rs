@@ -159,6 +159,17 @@ impl LiveKit {
             .await
     }
 
+    /// Pushes new metadata (e.g. a role change) to everyone in the room,
+    /// the participant included.
+    pub async fn update_metadata(&self, room: &str, identity: &str, metadata: &str) -> Result<()> {
+        self.room_service(
+            "UpdateParticipant",
+            room,
+            json!({ "room": room, "identity": identity, "metadata": metadata }),
+        )
+        .await
+    }
+
     pub async fn delete_room(&self, room: &str) -> Result<()> {
         self.room_service("DeleteRoom", room, json!({ "room": room })).await
     }
