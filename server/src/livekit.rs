@@ -1,10 +1,10 @@
-//! Minimal LiveKit integration: access tokens and the two RoomService calls
+//! Minimal LiveKit integration: access tokens and the RoomService calls
 //! we need, spoken over Twirp's JSON encoding.
 
 use anyhow::{bail, Result};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::db::now;
 
@@ -15,6 +15,7 @@ struct VideoGrant {
     room_join: bool,
     room_admin: bool,
     room_create: bool,
+    room_list: bool,
     // LiveKit treats a missing canPublish/canSubscribe as "allowed", so they
     // are always sent explicitly.
     can_publish: bool,
@@ -126,7 +127,9 @@ impl LiveKit {
             .map(|t| t.claims.sub)
     }
 
-    async fn room_service(&self, method: &str, room: &str, body: serde_json::Value) -> Result<()> {
+    /// Calls a RoomService method. `Null` means the room or participant is
+    /// already gone.
+    async fn room_service(&self, method: &str, room: &str, body: Value) -> Result<Value> {
         let token = self.sign(
             "voicy-server",
             60,
@@ -136,6 +139,7 @@ impl LiveKit {
                 room: room.to_owned(),
                 room_admin: true,
                 room_create: true,
+                room_list: true,
                 ..Default::default()
             },
         )?;
@@ -147,16 +151,46 @@ impl LiveKit {
             .send()
             .await?;
         let status = res.status();
-        if status.is_success() || status == reqwest::StatusCode::NOT_FOUND {
-            // Not found: the participant or room is already gone.
-            return Ok(());
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(Value::Null);
+        }
+        if status.is_success() {
+            return Ok(res.json().await.unwrap_or(Value::Null));
         }
         bail!("LiveKit {method} failed: {status} {}", res.text().await.unwrap_or_default())
     }
 
+    /// Names of the rooms that currently exist.
+    pub async fn list_rooms(&self) -> Result<Vec<String>> {
+        let res = self.room_service("ListRooms", "", json!({})).await?;
+        Ok(res["rooms"]
+            .as_array()
+            .map(|rooms| rooms.iter().filter_map(|r| r["name"].as_str().map(str::to_owned)).collect())
+            .unwrap_or_default())
+    }
+
+    /// Visible participants of a room as (identity, name). Hidden ones, such
+    /// as echo-test listeners, are left out.
+    pub async fn list_participants(&self, room: &str) -> Result<Vec<(String, String)>> {
+        let res = self.room_service("ListParticipants", room, json!({ "room": room })).await?;
+        Ok(res["participants"]
+            .as_array()
+            .map(|ps| {
+                ps.iter()
+                    .filter(|p| !p["permission"]["hidden"].as_bool().unwrap_or(false))
+                    .filter_map(|p| {
+                        let identity = p["identity"].as_str()?;
+                        (!identity.ends_with(ECHO_SUFFIX)).then(|| (identity.to_owned(), p["name"].as_str().unwrap_or("").to_owned()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     pub async fn remove_participant(&self, room: &str, identity: &str) -> Result<()> {
         self.room_service("RemoveParticipant", room, json!({ "room": room, "identity": identity }))
-            .await
+            .await?;
+        Ok(())
     }
 
     /// Pushes new metadata (e.g. a role change) to everyone in the room,
@@ -167,11 +201,13 @@ impl LiveKit {
             room,
             json!({ "room": room, "identity": identity, "metadata": metadata }),
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     pub async fn delete_room(&self, room: &str) -> Result<()> {
-        self.room_service("DeleteRoom", room, json!({ "room": room })).await
+        self.room_service("DeleteRoom", room, json!({ "room": room })).await?;
+        Ok(())
     }
 }
 

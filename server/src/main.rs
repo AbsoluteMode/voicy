@@ -4,14 +4,12 @@ mod db;
 mod error;
 mod invite_page;
 mod livekit;
+mod rooms;
 
 use std::{env, net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
-
-/// Single voice room for now; channels come later.
-pub const ROOM: &str = "main";
 
 pub struct Config {
     pub bind: SocketAddr,

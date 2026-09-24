@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -12,7 +14,8 @@ use crate::{
     db::{now, Invite, Member, Redeem, Role},
     error::{ApiError, ApiResult},
     livekit::ECHO_SUFFIX,
-    SharedState, ROOM,
+    rooms::{layout, parse_room, room_id, RoomPeer, RoomView},
+    SharedState,
 };
 
 const DEFAULT_INVITE_HOURS: u32 = 72;
@@ -24,6 +27,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/join", post(join))
         .route("/api/me", get(me).patch(update_me).delete(leave))
         .route("/api/token", post(token))
+        .route("/api/rooms", get(rooms))
         .route("/api/members", get(members))
         .route("/api/members/{id}/kick", post(kick))
         .route("/api/members/{id}/role", post(set_role))
@@ -114,6 +118,9 @@ async fn leave(State(s): State<SharedState>, AuthMember(m): AuthMember) -> ApiRe
 
 #[derive(Deserialize, Default)]
 struct TokenReq {
+    /// Room id from `/api/rooms`; clients before rooms existed send none.
+    #[serde(default)]
+    room: Option<String>,
     /// Token for the member's hidden echo-test listener instead.
     #[serde(default)]
     echo: bool,
@@ -124,14 +131,50 @@ async fn token(
     AuthMember(m): AuthMember,
     body: Option<Json<TokenReq>>,
 ) -> ApiResult<Json<Value>> {
-    let echo = body.is_some_and(|Json(b)| b.echo);
-    let token = if echo {
-        s.lk.echo_token(ROOM, &m.id)?
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let room = req.room.unwrap_or_else(|| room_id(1));
+    if parse_room(&room).is_none() {
+        return Err(ApiError::BadRequest("unknown room"));
+    }
+    let token = if req.echo {
+        s.lk.echo_token(&room, &m.id)?
     } else {
         let metadata = json!({ "role": m.role }).to_string();
-        s.lk.join_token(ROOM, &m.id, &m.nickname, metadata)?
+        s.lk.join_token(&room, &m.id, &m.nickname, metadata)?
     };
-    Ok(Json(json!({ "url": s.cfg.livekit_url(), "room": ROOM, "token": token })))
+    Ok(Json(json!({ "url": s.cfg.livekit_url(), "room": room, "token": token })))
+}
+
+/// Voice rooms that exist now, with who is in them.
+async fn live_rooms(s: &SharedState) -> anyhow::Result<BTreeMap<u32, Vec<RoomPeer>>> {
+    let mut rooms = BTreeMap::new();
+    for name in s.lk.list_rooms().await? {
+        let Some(n) = parse_room(&name) else { continue };
+        let peers = s.lk.list_participants(&name).await?;
+        rooms.insert(n, peers.into_iter().map(|(id, name)| RoomPeer { id, name }).collect());
+    }
+    Ok(rooms)
+}
+
+async fn rooms(State(s): State<SharedState>, _auth: AuthMember) -> ApiResult<Json<Vec<RoomView>>> {
+    Ok(Json(layout(live_rooms(&s).await?)))
+}
+
+/// Runs `f` for every live room (kicks, role updates, deletion).
+async fn each_room<F, Fut>(s: &SharedState, what: &str, f: F)
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let rooms = match s.lk.list_rooms().await {
+        Ok(rooms) => rooms,
+        Err(e) => return tracing::warn!("could not list rooms to {what}: {e:#}"),
+    };
+    for room in rooms {
+        if let Err(e) = f(room.clone()).await {
+            tracing::warn!("could not {what} in {room}: {e:#}");
+        }
+    }
 }
 
 async fn members(State(s): State<SharedState>, _auth: AuthMember) -> ApiResult<Json<Vec<Member>>> {
@@ -150,11 +193,11 @@ fn outranks(actor: &Member, target: &Member) -> ApiResult<()> {
 }
 
 async fn disconnect(s: &SharedState, identity: &str) {
-    for id in [identity.to_owned(), format!("{identity}{ECHO_SUFFIX}")] {
-        if let Err(e) = s.lk.remove_participant(ROOM, &id).await {
-            tracing::warn!("could not disconnect {id}: {e:#}");
-        }
-    }
+    each_room(s, "disconnect", |room| async move {
+        s.lk.remove_participant(&room, identity).await?;
+        s.lk.remove_participant(&room, &format!("{identity}{ECHO_SUFFIX}")).await
+    })
+    .await;
 }
 
 async fn kick(
@@ -192,9 +235,8 @@ async fn set_role(
     target.role = req.role;
     // Tokens carry the role as metadata; update it for a live session too.
     let metadata = json!({ "role": target.role }).to_string();
-    if let Err(e) = s.lk.update_metadata(ROOM, &target.id, &metadata).await {
-        tracing::warn!("could not update {}'s metadata: {e:#}", target.id);
-    }
+    let (lk, id, metadata) = (&s.lk, &target.id, &metadata);
+    each_room(&s, "update the role", |room| async move { lk.update_metadata(&room, id, metadata).await }).await;
     Ok(Json(target))
 }
 
@@ -278,9 +320,9 @@ async fn rtc_auth(State(s): State<SharedState>, headers: axum::http::HeaderMap) 
 async fn delete_server(State(s): State<SharedState>, auth: AuthMember) -> ApiResult<StatusCode> {
     auth.require(Role::Owner)?;
     s.db.wipe()?;
-    if let Err(e) = s.lk.delete_room(ROOM).await {
-        tracing::warn!("could not close room: {e:#}");
-    }
+    // Everyone is gone from the database; close every room they are in.
+    let lk = &s.lk;
+    each_room(&s, "close the room", |room| async move { lk.delete_room(&room).await }).await;
     tracing::info!("server deleted by owner {}", auth.0.nickname);
     Ok(StatusCode::NO_CONTENT)
 }

@@ -53,15 +53,18 @@ let rnnoiseWasm: Promise<ArrayBuffer> | null = null;
 
 /**
  * DeepFilterNet runs on the audio thread; if a frame takes longer than its
- * 10 ms the mic crackles. Render two seconds offline once per machine and
- * report processing time / audio time.
+ * 10 ms the mic crackles. Measure once per machine: processing time divided
+ * by audio time.
  */
 let dfnBench: Promise<number> | null = null;
-const BENCH_KEY = "voicy.dfnRealtimeFactor";
+// v2: v1 counted model loading as processing and overstated the load about
+// twofold, pushing capable machines to RNNoise.
+const BENCH_KEY = "voicy.dfnRealtimeFactor.v2";
 
 export function dfnRealtimeFactor(): Promise<number> {
   dfnBench ??= (async () => {
     try {
+      localStorage.removeItem("voicy.dfnRealtimeFactor");
       const saved = Number(localStorage.getItem(BENCH_KEY));
       if (saved > 0) return saved;
     } catch {
@@ -69,6 +72,9 @@ export function dfnRealtimeFactor(): Promise<number> {
     }
     const core = new DeepFilterNet3Core({ sampleRate: 48000, noiseReductionLevel: 100 });
     await core.initialize();
+    // Each render builds a fresh node, which loads the model inside the
+    // timed part. Two lengths with the same fixed cost: their difference is
+    // pure processing.
     const render = async (secs: number) => {
       const off = new OfflineAudioContext(1, 48000 * secs, 48000);
       // Typed for AudioContext, but only uses the BaseAudioContext part.
@@ -82,11 +88,13 @@ export function dfnRealtimeFactor(): Promise<number> {
       src.start();
       const t0 = performance.now();
       await off.startRendering();
-      return (performance.now() - t0) / (secs * 1000);
+      return performance.now() - t0;
     };
     // The first run pays for wasm tier-up, which a live call pays only once.
     await render(0.5);
-    const rtf = await render(2);
+    const short = await render(1);
+    const long = await render(4);
+    const rtf = Math.max(0.001, (long - short) / 3000);
     core.destroy();
     try {
       localStorage.setItem(BENCH_KEY, String(rtf));
@@ -98,7 +106,10 @@ export function dfnRealtimeFactor(): Promise<number> {
   return dfnBench;
 }
 
-/** Above this the audio thread has too little headroom for DeepFilterNet. */
+/**
+ * Above this the audio thread has too little headroom for DeepFilterNet:
+ * half of each 10 ms frame, leaving room for load spikes.
+ */
 export const DFN_MAX_REALTIME_FACTOR = 0.5;
 
 /**

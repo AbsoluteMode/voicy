@@ -8,7 +8,7 @@ import { ServerView } from "./components/ServerView";
 import { Modal } from "./components/ui";
 import { colorFor, initials } from "./components/ui";
 import { getSettings } from "./lib/settings";
-import { errorText, inviteFromClipboard, joinServer, listServers, SavedServer } from "./lib/tauri";
+import { api, errorText, inviteFromClipboard, joinServer, listServers, RoomInfo, SavedServer } from "./lib/tauri";
 import { confirmAndInstall, useUpdater } from "./lib/updater";
 import { useVoice, voice } from "./lib/voice";
 
@@ -64,7 +64,14 @@ export default function App() {
       setDialog(null);
       void reload().then(() => {
         setSelected(s.host);
-        if (connect && voice.getSnapshot().state === "idle") void voice.connect(s.host).catch(() => {});
+        if (!connect || voice.getSnapshot().state !== "idle") return;
+        // A friend who just joined wants to be where people already are.
+        void api<RoomInfo[]>(s.host, "GET", "/api/rooms")
+          .then((rooms) => {
+            const target = rooms.find((r) => r.participants.length > 0) ?? rooms[0];
+            if (target) return voice.connect(s.host, target.id);
+          })
+          .catch(() => {});
       });
     },
     [reload],

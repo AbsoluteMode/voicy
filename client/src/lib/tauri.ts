@@ -17,6 +17,13 @@ export interface Member {
   created_at: number;
 }
 
+/** A voice room from `/api/rooms`: all occupied rooms plus one empty. */
+export interface RoomInfo {
+  id: string;
+  name: string;
+  participants: { id: string; name: string }[];
+}
+
 export interface Invite {
   id: string;
   created_by: string | null;

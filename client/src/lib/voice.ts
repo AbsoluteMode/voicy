@@ -45,6 +45,8 @@ export const NET_BAD = { lossPct: 2, repairPct: 3 };
 
 export interface VoiceSnapshot {
   host: string | null;
+  /** Voice room id (r1, r2, ...) on that host. */
+  room: string | null;
   state: ConnState;
   peers: Peer[];
   micMuted: boolean;
@@ -73,6 +75,7 @@ export interface AudioStats {
 
 const IDLE: VoiceSnapshot = {
   host: null,
+  room: null,
   state: "idle",
   peers: [],
   micMuted: false,
@@ -168,14 +171,14 @@ class VoiceSession {
    */
   private generation = 0;
 
-  async connect(host: string) {
+  async connect(host: string, roomId: string) {
     const gen = ++this.generation;
     const stale = () => gen !== this.generation;
     this.teardown();
-    this.set({ ...IDLE, host, state: "connecting", micMuted: !this.micWanted });
+    this.set({ ...IDLE, host, room: roomId, state: "connecting", micMuted: !this.micWanted });
 
     try {
-      const { url, token } = await api<{ url: string; token: string }>(host, "POST", "/api/token");
+      const { url, token } = await api<{ url: string; token: string }>(host, "POST", "/api/token", { room: roomId });
       if (stale()) return;
 
       // One 48 kHz context for all playback: no resampling, and gain nodes
@@ -233,7 +236,7 @@ class VoiceSession {
                     ? undefined
                     : "lost";
           this.teardown();
-          this.set({ ...IDLE, host, endReason });
+          this.set({ ...IDLE, host, room: roomId, endReason });
         });
 
       // Superseded attempts already had their room closed by teardown().
@@ -251,7 +254,7 @@ class VoiceSession {
       if (stale()) return;
       this.teardown();
       const msg = e instanceof Error ? e.message : typeof e === "object" && e && "message" in e ? String(e.message) : String(e);
-      this.set({ ...IDLE, host, error: msg, endReason: /full|max/i.test(msg) ? "full" : undefined });
+      this.set({ ...IDLE, host, room: roomId, error: msg, endReason: /full|max/i.test(msg) ? "full" : undefined });
       throw e;
     }
   }
@@ -409,7 +412,7 @@ class VoiceSession {
     const host = this.snap.host;
     if (!on || !room || !host || !this.ctx) return;
     const gen = this.generation;
-    const { url, token } = await api<{ url: string; token: string }>(host, "POST", "/api/token", { echo: true });
+    const { url, token } = await api<{ url: string; token: string }>(host, "POST", "/api/token", { echo: true, room: this.snap.room });
     if (gen !== this.generation || this.room !== room) return;
     const s = getSettings();
     const echo = new Room({
@@ -455,9 +458,9 @@ class VoiceSession {
 
   async disconnect() {
     this.generation++;
-    const host = this.snap.host;
+    const { host, room } = this.snap;
     this.teardown();
-    this.set({ ...IDLE, host });
+    this.set({ ...IDLE, host, room });
   }
 
   async setMicMuted(muted: boolean) {

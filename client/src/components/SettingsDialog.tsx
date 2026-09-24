@@ -1,7 +1,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useRef, useState } from "react";
 
-import { NOISE_MODES, VoicyNoiseProcessor } from "../lib/noise";
+import { DFN_MAX_REALTIME_FACTOR, dfnRealtimeFactor, NOISE_MODES, VoicyNoiseProcessor } from "../lib/noise";
 import { AudioSettings, BITRATES, updateSettings, useSettings } from "../lib/settings";
 import { checkForUpdate, confirmAndInstall, useUpdater } from "../lib/updater";
 import { useVoice, voice } from "../lib/voice";
@@ -172,6 +172,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           ))}
         </div>
         <small>{NOISE_MODES.find((m) => m.mode === s.noise)?.desc}</small>
+        {(s.noise === "standard" || s.noise === "max") && <DfnLoad />}
         {v.noiseError && <small style={{ color: "var(--warn)" }}>{v.noiseError}</small>}
       </div>
       <div className="field">
@@ -196,6 +197,22 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         <button className="btn primary" onClick={onClose}>Готово</button>
       </div>
     </Modal>
+  );
+}
+
+/** Measured DeepFilterNet cost on this machine. */
+function DfnLoad() {
+  const [rtf, setRtf] = useState<number | null>(null);
+  useEffect(() => {
+    dfnRealtimeFactor().then(setRtf).catch(() => {});
+  }, []);
+  if (rtf === null) return <small>Меряю нагрузку на процессор…</small>;
+  const pct = Math.max(1, Math.round(rtf * 100));
+  const ok = rtf <= DFN_MAX_REALTIME_FACTOR;
+  return (
+    <small style={{ color: ok ? "var(--faint)" : "var(--warn)" }}>
+      Нагрузка DeepFilterNet: {pct}% одного ядра{ok ? "" : " — слишком много, используется лёгкое шумоподавление"}
+    </small>
   );
 }
 

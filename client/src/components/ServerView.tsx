@@ -19,7 +19,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { updateSettings, useSettings } from "../lib/settings";
-import { api, errorCode, errorText, forgetServer, Member, Role, SavedServer } from "../lib/tauri";
+import { api, errorCode, errorText, forgetServer, Member, Role, RoomInfo, SavedServer } from "../lib/tauri";
 import { AudioStats, EndReason, NET_BAD, Peer, PeerNet, useVoice, voice } from "../lib/voice";
 import { DeleteDialog } from "./DeleteDialog";
 import { InviteDialog } from "./InviteDialog";
@@ -155,17 +155,45 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
     if (v.endReason === "deleted") setFatal("gone");
   }, [here, v.endReason]);
 
-  const online = useMemo(() => new Set(here ? v.peers.map((p) => p.identity) : []), [here, v.peers]);
+  // Rooms come and go on the server: every occupied one plus one empty.
+  const [rooms, setRooms] = useState<RoomInfo[]>([]);
+  const loadRooms = useCallback(async () => {
+    try {
+      setRooms(await api<RoomInfo[]>(server.host, "GET", "/api/rooms"));
+    } catch {
+      // Keep the last list; the next poll will try again.
+    }
+  }, [server.host]);
+  useEffect(() => {
+    setRooms([]);
+    void loadRooms();
+    const t = setInterval(() => void loadRooms(), 3000);
+    return () => clearInterval(t);
+  }, [loadRooms]);
+  // Our own moves change the list right away; don't wait for the poll.
+  const myRoom = here && v.state !== "idle" ? v.room : null;
+  useEffect(() => {
+    const t = setTimeout(() => void loadRooms(), 400);
+    return () => clearTimeout(t);
+  }, [myRoom, peerKey, loadRooms]);
 
-  async function join() {
+  const online = useMemo(() => {
+    const ids = new Set(rooms.flatMap((r) => r.participants.map((p) => p.id)));
+    if (here) v.peers.forEach((p) => ids.add(p.identity));
+    return ids;
+  }, [rooms, here, v.peers]);
+
+  async function join(roomId: string) {
     setError("");
     voice.clearEnd();
     try {
-      await voice.connect(server.host);
+      await voice.connect(server.host, roomId);
     } catch (e) {
       handleError(e);
     }
   }
+
+  const roomName = (id: string | null) => rooms.find((r) => r.id === id)?.name ?? (id ? `Комната ${id.slice(1)}` : "");
 
   async function act(fn: () => Promise<unknown>) {
     setError("");
@@ -257,28 +285,60 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
                 Звук заблокирован. <button className="btn" onClick={() => voice.startAudio()}>Включить звук</button>
               </div>
             )}
+            <h2 className="stage-title">
+              <Volume2 size={18} /> {roomName(v.room)}
+            </h2>
             <div className="peers">
               {v.peers.map((p) => <PeerTile key={p.identity} peer={{ ...p, role: roleById.get(p.identity) ?? p.role }} />)}
             </div>
           </>
         ) : (
           <div className="stage-empty">
-            <div className="big">Голосовой канал</div>
-            <div className="hint">
-              {members.length > 0 ? `Участников на сервере: ${members.length}` : "Заходи и зови друзей"}
+            <div className="big">Куда зайдём?</div>
+            <div className="hint">Пустая комната всегда есть: зайди в неё, и появится следующая.</div>
+            <div className="room-cards">
+              {rooms.map((r) => (
+                <button key={r.id} className="room-card" onClick={() => join(r.id)} disabled={here && v.state === "connecting"}>
+                  <div className="room-card-name">
+                    <Volume2 size={16} /> {r.name}
+                  </div>
+                  <div className="room-card-who">
+                    {r.participants.length ? r.participants.map((p) => p.name).join(", ") : "пусто"}
+                  </div>
+                  <span className="btn green">
+                    <Mic size={16} /> Зайти
+                  </span>
+                </button>
+              ))}
             </div>
-            <button className="btn green big" onClick={join} disabled={here && v.state === "connecting"}>
-              <Mic size={18} /> Подключиться
-            </button>
           </div>
         )}
       </section>
 
       <aside className="members">
-        <h3>В канале: {online.size}</h3>
-        {members.filter((m) => online.has(m.id)).map((m) => memberRow(m, true))}
+        <h3>Комнаты</h3>
+        {rooms.map((r) => {
+          const mine = r.id === myRoom;
+          // Our own room is live from LiveKit; others come from the poll.
+          const people = mine ? v.peers.map((p) => ({ id: p.identity, name: p.name, speaking: p.speaking })) : r.participants;
+          return (
+            <div key={r.id} className={`room${mine ? " mine" : ""}`}>
+              <button className="room-head" onClick={() => !mine && join(r.id)} title={mine ? "Ты здесь" : `Зайти в «${r.name}»`}>
+                <Volume2 size={15} />
+                <span>{r.name}</span>
+                {people.length === 0 && <small>пусто</small>}
+              </button>
+              {people.map((p) => (
+                <div key={p.id} className={`room-peer${"speaking" in p && p.speaking ? " speaking" : ""}`}>
+                  <span className="mini" style={{ background: colorFor(p.id) }}>{initials(p.name)}</span>
+                  {p.name}
+                </div>
+              ))}
+            </div>
+          );
+        })}
         <h3 style={{ marginTop: 18 }}>Участники: {members.length}</h3>
-        {members.filter((m) => !online.has(m.id)).map((m) => memberRow(m, false))}
+        {members.map((m) => memberRow(m, online.has(m.id)))}
       </aside>
 
       <footer className="controls">
