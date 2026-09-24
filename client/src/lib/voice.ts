@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import {
   AudioCaptureOptions,
+  createLocalAudioTrack,
   DisconnectReason,
   LocalAudioTrack,
   Participant,
@@ -38,8 +39,8 @@ export interface PeerNet {
   /** Share of played audio the receiver had to invent or time-stretch:
    *  what "chewed" or robotic speech is made of. */
   repairPct: number;
-  /** Extra receive buffer we asked for because of repairs, ms. */
-  bufferMs: number;
+  /** Measured receive jitter-buffer delay over the last sample, ms. */
+  bufferMs?: number;
 }
 
 /** Above either, the peer's connection is audibly unstable. */
@@ -180,6 +181,8 @@ class VoiceSession {
   private listeners = new Set<() => void>();
   private snap: VoiceSnapshot = IDLE;
   private micWanted = true;
+  private micPublishing: Promise<void> | null = null;
+  private micUpdate: Promise<void> = Promise.resolve();
 
   subscribe = (fn: () => void) => {
     this.listeners.add(fn);
@@ -297,9 +300,8 @@ class VoiceSession {
       await room.connect(url, token, { autoSubscribe: true });
       if (stale()) return;
       this.set({ state: "connected" });
-      await room.localParticipant.setMicrophoneEnabled(this.micWanted);
+      if (this.micWanted && !this.micTrack()) await this.publishMic(room);
       if (stale()) return;
-      await this.applyNoise();
       this.refresh();
       this.startStats();
       this.meterTimer = setInterval(this.tickMeters, 50);
@@ -401,7 +403,7 @@ class VoiceSession {
   }
 
   private peerNet = new Map<string, PeerNet>();
-  private lastRecv = new Map<string, { lost: number; got: number; samples: number; repaired: number }>();
+  private lastRecv = new Map<string, { lost: number; got: number; samples: number; repaired: number; bufferDelay?: number; bufferEmitted?: number }>();
 
   /** Receive-side quality per remote peer, from WebRTC inbound stats. */
   private async sampleReceivers() {
@@ -417,6 +419,8 @@ class VoiceSession {
           got: r.packetsReceived ?? 0,
           samples: r.totalSamplesReceived ?? 0,
           repaired: (r.concealedSamples ?? 0) + (r.insertedSamplesForDeceleration ?? 0) + (r.removedSamplesForAcceleration ?? 0),
+          bufferDelay: r.jitterBufferDelay as number | undefined,
+          bufferEmitted: r.jitterBufferEmittedCount as number | undefined,
         };
         const prev = this.lastRecv.get(p.identity);
         this.lastRecv.set(p.identity, now);
@@ -424,40 +428,23 @@ class VoiceSession {
         const packets = now.got - prev.got + (now.lost - prev.lost);
         const samples = now.samples - prev.samples;
         const repairPct = samples > 0 ? Math.round(((now.repaired - prev.repaired) / samples) * 1000) / 10 : 0;
+        // Concealment also comes from packet loss, which a deeper buffer
+        // cannot fix. Leave playout adaptation to WebRTC and report its
+        // measured delay instead of forcing a target from repairPct.
+        const emitted = now.bufferEmitted !== undefined && prev.bufferEmitted !== undefined ? now.bufferEmitted - prev.bufferEmitted : 0;
+        const delay = now.bufferDelay !== undefined && prev.bufferDelay !== undefined ? now.bufferDelay - prev.bufferDelay : -1;
+        const bufferMs = emitted > 0 && delay >= 0
+          ? Math.round((delay / emitted) * 1000)
+          : undefined;
         this.peerNet.set(p.identity, {
           lossPct: packets > 0 ? Math.round(((now.lost - prev.lost) / packets) * 1000) / 10 : 0,
           jitterMs: Math.round((r.jitter ?? 0) * 1000),
           repairPct,
-          bufferMs: this.adaptBuffer(p.identity, receiver, repairPct),
+          bufferMs,
         });
       });
     }
     this.refresh();
-  }
-
-  private bufferTarget = new Map<string, { ms: number; calm: number }>();
-
-  /**
-   * A jittery link makes the receiver speed speech up and slow it down to
-   * keep playing, which sounds unsteady. When that happens, ask for a deeper
-   * buffer: a little more delay, steady speech. Back off after calm spells.
-   */
-  private adaptBuffer(identity: string, receiver: RTCRtpReceiver, repairPct: number): number {
-    const r = receiver as RTCRtpReceiver & { jitterBufferTarget?: number | null };
-    if (!("jitterBufferTarget" in r)) return 0;
-    const cur = this.bufferTarget.get(identity) ?? { ms: 0, calm: 0 };
-    let ms = cur.ms;
-    let calm = cur.calm;
-    if (repairPct > NET_BAD.repairPct) {
-      ms = Math.min(ms + 40, 240);
-      calm = 0;
-    } else if (repairPct < 0.5 && ms > 0 && ++calm >= 20) {
-      ms = Math.max(0, ms - 20);
-      calm = 0;
-    }
-    if (ms !== cur.ms) r.jitterBufferTarget = ms || null;
-    this.bufferTarget.set(identity, { ms, calm });
-    return ms;
   }
 
   /**
@@ -590,6 +577,8 @@ class VoiceSession {
     clearInterval(this.statsTimer);
     const room = this.room;
     this.room = null;
+    this.micPublishing = null;
+    this.micUpdate = Promise.resolve();
     room?.removeAllListeners();
     void room?.disconnect();
     void this.ctx?.close();
@@ -612,9 +601,8 @@ class VoiceSession {
     }
     this.micWanted = !muted;
     this.set({ micMuted: muted });
-    await this.room?.localParticipant.setMicrophoneEnabled(!muted);
-    // The first unmute of a session creates the track.
-    if (!muted) await this.applyNoise();
+    const room = this.room;
+    if (room) await this.syncMic(room);
     this.refresh();
   }
 
@@ -622,12 +610,61 @@ class VoiceSession {
     return this.room?.localParticipant.getTrackPublication(Track.Source.Microphone)?.track as LocalAudioTrack | undefined;
   }
 
+  /** Serialize mute/PTT changes, including toggles during first capture. */
+  private syncMic(room: Room): Promise<void> {
+    const pending = this.micUpdate.catch(() => {}).then(async () => {
+      if (this.room !== room) return;
+      if (this.micPublishing) await this.micPublishing.catch(() => {});
+      if (this.room !== room) return;
+      if (!this.micTrack()) {
+        if (this.micWanted && !this.snap.deafened) await this.publishMic(room);
+      } else {
+        await room.localParticipant.setMicrophoneEnabled(this.micWanted && !this.snap.deafened);
+      }
+    });
+    this.micUpdate = pending;
+    return pending;
+  }
+
+  /** Process the captured mic before it can be sent to anyone in the room. */
+  private publishMic(room: Room): Promise<void> {
+    if (this.room === room && this.micTrack()) return Promise.resolve();
+    if (this.micPublishing) return this.micPublishing;
+    const gen = this.generation;
+    const pending = (async () => {
+      const track = await createLocalAudioTrack(captureOptions());
+      let published = false;
+      try {
+        if (this.room !== room || gen !== this.generation) return;
+        track.setAudioContext(this.ctx ?? undefined);
+        // If every processor fails, applyNoise reports it in the UI. Keep
+        // voice available with the captured track, as before this change.
+        await this.applyNoise(track, () => this.room === room && gen === this.generation);
+        if (this.room !== room || gen !== this.generation) return;
+        // Publish closed, then apply the latest mute state. A toggle during
+        // capture or negotiation cannot expose the mic before setup finishes.
+        await track.mute();
+        await room.localParticipant.publishTrack(track, publishOptions());
+        published = true;
+        if (this.room === room && gen === this.generation) {
+          await room.localParticipant.setMicrophoneEnabled(this.micWanted && !this.snap.deafened);
+        }
+      } finally {
+        if (!published) track.stop();
+      }
+    })();
+    this.micPublishing = pending;
+    void pending.finally(() => {
+      if (this.micPublishing === pending) this.micPublishing = null;
+    }).catch(() => {});
+    return pending;
+  }
+
   /**
    * Puts our processor on the mic track in the configured mode. It stays on
    * with suppression off too, because it also forces the track to mono.
    */
-  private async applyNoise() {
-    const track = this.micTrack();
+  private async applyNoise(track = this.micTrack(), report = () => true) {
     if (!track) return;
     let mode = getSettings().noise;
     const current = track.getProcessor();
@@ -645,7 +682,7 @@ class VoiceSession {
       } else {
         await track.setProcessor(new VoicyNoiseProcessor(mode));
       }
-      this.set({ noiseError: notice });
+      if (report()) this.set({ noiseError: notice });
     } catch (e) {
       console.error("noise suppression failed", e);
       // DeepFilterNet is the heavy one; RNNoise is the safe fallback, and a
@@ -656,9 +693,11 @@ class VoiceSession {
         () => true,
         () => false,
       );
-      this.set({
-        noiseError: ok && fallback === "light" ? "DeepFilterNet не запустился, включено лёгкое шумоподавление." : "Шумоподавление не запустилось.",
-      });
+      if (report()) {
+        this.set({
+          noiseError: ok && fallback === "light" ? "DeepFilterNet не запустился, включено лёгкое шумоподавление." : "Шумоподавление не запустилось.",
+        });
+      }
     }
   }
 
@@ -667,8 +706,8 @@ class VoiceSession {
     this.set({ deafened });
     this.room?.remoteParticipants.forEach((p) => this.applyVolume(p));
     if (deafened) {
-      await this.room?.localParticipant.setMicrophoneEnabled(false);
       this.set({ micMuted: true });
+      if (this.room) await this.syncMic(this.room);
     } else {
       await this.setMicMuted(!this.micWanted);
     }
@@ -735,11 +774,11 @@ class VoiceSession {
     if (opts.republish) {
       // Bitrate is negotiated at publish time.
       await room.localParticipant.unpublishTrack(track, true);
-      await room.localParticipant.setMicrophoneEnabled(this.micWanted && !this.snap.deafened, captureOptions(), publishOptions());
+      if (this.micWanted && !this.snap.deafened) await this.publishMic(room);
     } else {
       await track.restartTrack(captureOptions());
+      await this.applyNoise();
     }
-    await this.applyNoise();
     this.refresh();
   }
 

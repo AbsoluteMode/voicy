@@ -114,7 +114,7 @@ function PeerRow({ peer, actions }: { peer: Peer; actions?: ReactNode }) {
         e.preventDefault();
         setVolume(1);
       }}
-      title={peer.isLocal ? undefined : `Громкость ${Math.round(volume * 100)}% · колесо мыши — изменить, правый клик — сбросить`}
+      title={peer.isLocal ? undefined : `Громкость ${Math.round(volume * 100)}% · колесо мыши — изменить, правый клик — сбросить${net?.bufferMs !== undefined ? ` · буфер ${net.bufferMs} мс` : ""}`}
     >
       <div className={`av${peer.speaking ? " speaking" : ""}`} style={{ background: colorFor(peer.identity) }}>
         {initials(peer.name)}
@@ -125,7 +125,7 @@ function PeerRow({ peer, actions }: { peer: Peer; actions?: ReactNode }) {
           {peer.isLocal && <span className="me"> · ты</span>}
         </div>
         {bad && net && (
-          <div className="problem" title={`потери ${net.lossPct}% · рывки ${net.repairPct}% · джиттер ${net.jitterMs} мс`}>
+          <div className="problem" title={`потери ${net.lossPct}% · рывки ${net.repairPct}% · джиттер ${net.jitterMs} мс${net.bufferMs !== undefined ? ` · буфер ${net.bufferMs} мс` : ""}`}>
             рвётся звук · потери {net.lossPct}%
           </div>
         )}
@@ -355,6 +355,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
             Звук заблокирован. <button className="btn" onClick={() => voice.startAudio()}>Включить звук</button>
           </div>
         )}
+        {connected && v.noiseError && <div className="notice">{v.noiseError}</div>}
 
         {rooms.map((r) => {
           const mine = r.id === myRoom;
