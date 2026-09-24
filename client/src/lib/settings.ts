@@ -13,8 +13,17 @@ export interface AudioSettings {
   /** Per-member playback volume, 0..2, keyed by member id. */
   volumes: Record<string, number>;
   nickname: string;
+  /** Global shortcuts in accelerator form ("Ctrl+Shift+KeyM"); null = unset. */
+  hotkeys: Hotkeys;
   /** Bumped when a default changes and old saved settings must follow. */
   version: number;
+}
+
+export interface Hotkeys {
+  mute: string | null;
+  deafen: string | null;
+  /** Push-to-talk: the mic is live only while this is held. */
+  ptt: string | null;
 }
 
 // Like Discord out of the box: DeepFilterNet keeps the keyboard out, and
@@ -30,10 +39,9 @@ const DEFAULTS: AudioSettings = {
   autoGainControl: false,
   volumes: {},
   nickname: "",
-  version: 2,
+  hotkeys: { mute: "Ctrl+Shift+KeyM", deafen: "Ctrl+Shift+KeyD", ptt: null },
+  version: 3,
 };
-
-export const BITRATES = [64, 96, 128, 192, 256];
 
 const KEY = "voicy.settings";
 const listeners = new Set<() => void>();
@@ -54,7 +62,16 @@ function read(): AudioSettings {
       saved.echoCancellation = true;
       saved.version = 2;
     }
-    return { ...DEFAULTS, ...saved };
+    // Version 3 turned the suppression levels into one on/off switch, and
+    // bitrate, echo cancellation and AGC into fixed defaults.
+    if (!(saved.version >= 3)) {
+      saved.noise = saved.noise === "off" ? "off" : "standard";
+      saved.bitrate = DEFAULTS.bitrate;
+      saved.echoCancellation = true;
+      saved.autoGainControl = false;
+      saved.version = 3;
+    }
+    return { ...DEFAULTS, ...saved, hotkeys: { ...DEFAULTS.hotkeys, ...saved.hotkeys } };
   } catch {
     return DEFAULTS;
   }

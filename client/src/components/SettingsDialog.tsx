@@ -1,8 +1,9 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useRef, useState } from "react";
 
-import { DFN_MAX_REALTIME_FACTOR, dfnRealtimeFactor, NOISE_MODES, VoicyNoiseProcessor } from "../lib/noise";
-import { AudioSettings, BITRATES, updateSettings, useSettings } from "../lib/settings";
+import { accelFrom, applyHotkeys, HotkeyErrors, prettyAccel } from "../lib/hotkeys";
+import { VoicyNoiseProcessor } from "../lib/noise";
+import { AudioSettings, Hotkeys, updateSettings, useSettings } from "../lib/settings";
 import { checkForUpdate, confirmAndInstall, useUpdater } from "../lib/updater";
 import { useVoice, voice } from "../lib/voice";
 import { Modal, Toggle } from "./ui";
@@ -120,18 +121,17 @@ function MicMeter({ s }: { s: AudioSettings }) {
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const s = useSettings();
-  const v = useVoice();
   const devices = useDevices();
   const inputs = devices.filter((d) => d.kind === "audioinput" && d.deviceId !== "communications");
   const outputs = devices.filter((d) => d.kind === "audiooutput" && d.deviceId !== "communications");
 
-  const apply = (patch: Partial<AudioSettings>, republish = false) => {
+  const apply = (patch: Partial<AudioSettings>) => {
     updateSettings(patch);
-    void voice.applyAudioSettings({ republish });
+    void voice.applyAudioSettings();
   };
 
   return (
-    <Modal title="Настройки звука" onClose={onClose}>
+    <Modal title="Настройки" onClose={onClose}>
       <label className="field">
         <span>Микрофон</span>
         <select value={s.inputDevice} onChange={(e) => apply({ inputDevice: e.target.value })}>
@@ -152,67 +152,19 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       </label>
       <MicMeter s={s} />
       <div className="field">
-        <span>Качество голоса (битрейт Opus)</span>
-        <div className="seg">
-          {BITRATES.map((b) => (
-            <button key={b} type="button" className={s.bitrate === b ? "on" : ""} onClick={() => apply({ bitrate: b }, true)}>
-              {b}
-            </button>
-          ))}
-        </div>
-        <small>кбит/с. У Дискорда по умолчанию 64. Выше 128 разница слышна в основном на хороших микрофонах.</small>
+        <Toggle
+          title="Шумоподавление"
+          desc="Убирает фон, клавиатуру и щелчки. Голос остаётся естественным."
+          checked={s.noise !== "off"}
+          onChange={(on) => apply({ noise: on ? "standard" : "off" })}
+        />
       </div>
-      <div className="field">
-        <span>Шумоподавление</span>
-        <div className="seg">
-          {NOISE_MODES.map((m) => (
-            <button key={m.mode} type="button" className={s.noise === m.mode ? "on" : ""} onClick={() => apply({ noise: m.mode })}>
-              {m.label}
-            </button>
-          ))}
-        </div>
-        <small>{NOISE_MODES.find((m) => m.mode === s.noise)?.desc}</small>
-        {(s.noise === "standard" || s.noise === "max") && <DfnLoad />}
-        {v.noiseError && <small style={{ color: "var(--warn)" }}>{v.noiseError}</small>}
-      </div>
-      <div className="field">
-        <span>Обработка</span>
-        <div>
-          <Toggle
-            title="Эхоподавление"
-            desc="Не даёт звуку из твоих наушников или колонок вернуться к друзьям через твой микрофон. Выключай, только если точно в закрытых наушниках."
-            checked={s.echoCancellation}
-            onChange={(v) => apply({ echoCancellation: v })}
-          />
-          <Toggle
-            title="Автогромкость"
-            desc="Выравнивает громкость, если говоришь то тихо, то громко."
-            checked={s.autoGainControl}
-            onChange={(v) => apply({ autoGainControl: v })}
-          />
-        </div>
-      </div>
+      <HotkeysSection />
       <AboutRow />
       <div className="foot">
         <button className="btn primary" onClick={onClose}>Готово</button>
       </div>
     </Modal>
-  );
-}
-
-/** Measured DeepFilterNet cost on this machine. */
-function DfnLoad() {
-  const [rtf, setRtf] = useState<number | null>(null);
-  useEffect(() => {
-    dfnRealtimeFactor().then(setRtf).catch(() => {});
-  }, []);
-  if (rtf === null) return <small>Меряю нагрузку на процессор…</small>;
-  const pct = Math.max(1, Math.round(rtf * 100));
-  const ok = rtf <= DFN_MAX_REALTIME_FACTOR;
-  return (
-    <small style={{ color: ok ? "var(--faint)" : "var(--warn)" }}>
-      Нагрузка DeepFilterNet: {pct}% одного ядра{ok ? "" : " — слишком много, используется лёгкое шумоподавление"}
-    </small>
   );
 }
 
@@ -252,6 +204,68 @@ function AboutRow() {
           Проверить обновления
         </button>
       )}
+    </div>
+  );
+}
+
+const HOTKEY_ROWS: { key: keyof Hotkeys; title: string; desc?: string }[] = [
+  { key: "mute", title: "Микрофон вкл/выкл" },
+  { key: "deafen", title: "Звук вкл/выкл" },
+  { key: "ptt", title: "Рация", desc: "Говоришь, только пока держишь клавишу" },
+];
+
+/** Global shortcuts: click a key, press the combo; Esc cancels, Backspace clears. */
+function HotkeysSection() {
+  const s = useSettings();
+  const [editing, setEditing] = useState<keyof Hotkeys | null>(null);
+  const [errors, setErrors] = useState<HotkeyErrors>({});
+
+  useEffect(() => {
+    void applyHotkeys().then(setErrors);
+  }, [s.hotkeys]);
+
+  useEffect(() => {
+    if (!editing) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") return setEditing(null);
+      const accel = e.key === "Backspace" ? null : accelFrom(e);
+      if (accel === null && e.key !== "Backspace") return; // a lone modifier: keep waiting
+      updateSettings({ hotkeys: { ...s.hotkeys, [editing]: accel } });
+      setEditing(null);
+    };
+    // Capture phase, so Esc does not also close the dialog.
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [editing, s.hotkeys]);
+
+  return (
+    <div className="field">
+      <span>Горячие клавиши</span>
+      <small>Работают, даже когда Voicy свёрнут или ты в игре.</small>
+      <div>
+        {HOTKEY_ROWS.map((row) => (
+          <div className="toggle" key={row.key}>
+            <div>
+              <div className="t">{row.title}</div>
+              {errors[row.key] ? (
+                <div className="d" style={{ color: "var(--warn)" }}>Это сочетание уже занято другой программой</div>
+              ) : (
+                row.desc && <div className="d">{row.desc}</div>
+              )}
+            </div>
+            <button
+              type="button"
+              className={`btn hotkey${editing === row.key ? " primary" : ""}`}
+              onClick={() => setEditing(editing === row.key ? null : row.key)}
+              title="Нажми и введи сочетание. Esc — отмена, Backspace — убрать"
+            >
+              {editing === row.key ? "Нажми клавиши…" : prettyAccel(s.hotkeys[row.key])}
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

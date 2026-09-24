@@ -7,7 +7,8 @@ import { JoinDialog } from "./components/JoinDialog";
 import { ServerView } from "./components/ServerView";
 import { Modal } from "./components/ui";
 import { colorFor, initials } from "./components/ui";
-import { getSettings } from "./lib/settings";
+import { applyHotkeys } from "./lib/hotkeys";
+import { getSettings, useSettings } from "./lib/settings";
 import { api, errorText, inviteFromClipboard, joinServer, listServers, RoomInfo, SavedServer } from "./lib/tauri";
 import { confirmAndInstall, useUpdater } from "./lib/updater";
 import { useVoice, voice } from "./lib/voice";
@@ -122,6 +123,12 @@ export default function App() {
     window.addEventListener("focus", check);
     return () => window.removeEventListener("focus", check);
   }, []);
+
+  // Global shortcuts live for the whole app, not just the settings dialog.
+  const { hotkeys } = useSettings();
+  useEffect(() => {
+    void applyHotkeys();
+  }, [hotkeys]);
 
   const update = useUpdater();
   const startUpdate = () => confirmAndInstall(v.state !== "idle");

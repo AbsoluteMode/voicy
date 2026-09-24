@@ -239,3 +239,4 @@ input[type=range] { accent-color: var(--accent); }
 .room-peer .mini { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 9px; font-weight: 700; color: #fff; box-shadow: 0 0 0 2px transparent; }
 .room-peer.speaking { color: var(--text); }
 .room-peer.speaking .mini { box-shadow: 0 0 0 2px var(--speak); }
+.btn.hotkey { min-width: 150px; font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; }

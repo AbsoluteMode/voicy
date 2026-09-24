@@ -116,6 +116,28 @@ function publishOptions(): TrackPublishOptions {
   };
 }
 
+/** Two short tones: rising when something turns on, falling when off. */
+function cue(kind: "on" | "off") {
+  try {
+    const ctx = new AudioContext();
+    const tones = kind === "on" ? [520, 780] : [640, 420];
+    tones.forEach((hz, i) => {
+      const osc = new OscillatorNode(ctx, { frequency: hz, type: "sine" });
+      const gain = new GainNode(ctx, { gain: 0 });
+      const t = ctx.currentTime + i * 0.07;
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(0.12, t + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.1);
+    });
+    setTimeout(() => void ctx.close(), 400);
+  } catch {
+    // Cues are a nicety.
+  }
+}
+
 /** Mono 16-bit PCM WAV. */
 function wav16(chunks: Float32Array[], rate: number): Uint8Array {
   const n = chunks.reduce((a, c) => a + c.length, 0);
@@ -205,6 +227,8 @@ class VoiceSession {
     const gen = ++this.generation;
     const stale = () => gen !== this.generation;
     this.teardown();
+    // With push-to-talk set up, the mic starts closed.
+    if (getSettings().hotkeys.ptt) this.micWanted = false;
     this.set({ ...IDLE, host, room: roomId, state: "connecting", micMuted: !this.micWanted });
 
     try {
@@ -620,6 +644,35 @@ class VoiceSession {
       await this.setMicMuted(!this.micWanted);
     }
     this.refresh();
+  }
+
+  /** Mic toggle from the button or the hotkey, with a Discord-style cue. */
+  async toggleMic() {
+    const muted = !this.snap.micMuted;
+    cue(muted ? "off" : "on");
+    await this.setMicMuted(muted);
+  }
+
+  async toggleDeafen() {
+    const deafened = !this.snap.deafened;
+    cue(deafened ? "off" : "on");
+    await this.setDeafened(deafened);
+  }
+
+  private pttRelease: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * Push-to-talk: live while held. The mic closes a moment after release so
+   * the last word is not cut off, and key repeat does nothing.
+   */
+  async pushToTalk(held: boolean) {
+    clearTimeout(this.pttRelease);
+    if (!this.room) return;
+    if (held) {
+      if (this.snap.micMuted) await this.setMicMuted(false);
+    } else {
+      this.pttRelease = setTimeout(() => void this.setMicMuted(true), 250);
+    }
   }
 
   setVolume(identity: string) {

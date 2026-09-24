@@ -393,10 +393,10 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
             <span>Не в голосе · {server.nickname}</span>
           )}
         </div>
-        <button className={`icon-btn${v.micMuted ? " off" : ""}`} onClick={() => voice.setMicMuted(!v.micMuted)} title={v.micMuted ? "Включить микрофон" : "Выключить микрофон"}>
+        <button className={`icon-btn${v.micMuted ? " off" : ""}`} onClick={() => voice.toggleMic()} title={v.micMuted ? "Включить микрофон" : "Выключить микрофон"}>
           {v.micMuted ? <MicOff size={18} /> : <Mic size={18} />}
         </button>
-        <button className={`icon-btn${v.deafened ? " off" : ""}`} onClick={() => voice.setDeafened(!v.deafened)} title={v.deafened ? "Включить звук" : "Выключить звук"}>
+        <button className={`icon-btn${v.deafened ? " off" : ""}`} onClick={() => voice.toggleDeafen()} title={v.deafened ? "Включить звук" : "Выключить звук"}>
           {v.deafened ? <HeadphoneOff size={18} /> : <Headphones size={18} />}
         </button>
         {connected && (
@@ -408,7 +408,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
             {v.echo ? <EarOff size={18} /> : <Ear size={18} />}
           </button>
         )}
-        <button className="icon-btn" onClick={() => setDialog("settings")} title="Настройки звука">
+        <button className="icon-btn" onClick={() => setDialog("settings")} title="Настройки">
           <Settings size={18} />
         </button>
         {connected && (
