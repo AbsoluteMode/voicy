@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
     let db = db::Db::open(&cfg.db_path)?;
     if let Some(code) = &cfg.bootstrap_code {
         if db.ensure_owner_invite(&auth::hash(code), db::now())? {
-            tracing::info!("owner invite created from VOICY_BOOTSTRAP_CODE");
+            tracing::info!("owner invite created from VOICY_BOOTSTRAP_CODE (a recovery invite if there is an owner)");
         }
     }
     let lk = livekit::LiveKit::new(&cfg.livekit_api_url, &cfg.livekit_key, &cfg.livekit_secret);

@@ -52,7 +52,7 @@ export function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCr
   return (
     <Modal
       title="Создать сервер"
-      sub="Нужен свой VPS на Ubuntu или Debian. Voicy сам зайдёт по SSH, поставит всё нужное и сделает тебя владельцем."
+      sub="Нужен свой VPS на Ubuntu или Debian. Voicy сам зайдёт по SSH, поставит всё нужное и сделает тебя владельцем. Если Voicy там уже стоит, вернёт тебе права владельца, ничего не удаляя."
       onClose={running ? undefined : onClose}
     >
       <form onSubmit={submit}>

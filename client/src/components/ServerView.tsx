@@ -455,6 +455,9 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
               ? `Владелец удалил «${name}».`
               : `Тебя больше нет среди участников «${name}». Чтобы вернуться, попроси новую ссылку.`}
           </p>
+          {fatal === "unauthorized" && server.role === "owner" && (
+            <p>Это твой сервер? Нажми «+» → «Создать свой» и введи данные того же VPS: права владельца вернутся, люди и комнаты останутся.</p>
+          )}
           <div className="actions">
             <button className="btn primary" onClick={forget}>Убрать из списка</button>
           </div>

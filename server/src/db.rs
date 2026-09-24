@@ -122,6 +122,9 @@ CREATE TABLE IF NOT EXISTS avatars (
 );
 ";
 
+/// `created_by` of an owner invite made by a redeploy while an owner exists.
+const RECOVERY: &str = "ssh-recovery";
+
 impl Db {
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
@@ -157,18 +160,21 @@ impl Db {
 
     /// Creates the owner invite for a fresh install. Returns false when an
     /// owner already exists or the server was deleted.
+    /// Owner invite for the code the deploying app passed in. While there
+    /// is no owner it simply creates one. With an owner it is a recovery
+    /// invite: whoever can redeploy over SSH controls the server anyway, so
+    /// a fresh code from a redeploy hands ownership back (for a lost login).
+    /// A code seen before, used or not, is never reissued.
     pub fn ensure_owner_invite(&self, code_hash: &str, now: i64) -> Result<bool> {
         if self.is_deleted()? {
             return Ok(false);
         }
         let conn = self.conn();
         let owners: i64 = conn.query_row("SELECT COUNT(*) FROM members WHERE role = 'owner'", [], |r| r.get(0))?;
-        if owners > 0 {
-            return Ok(false);
-        }
+        let (created_by, expires_at) = if owners > 0 { (Some(RECOVERY), Some(now + 24 * 3600)) } else { (None, None) };
         let n = conn.execute(
-            "INSERT OR IGNORE INTO invites (id, code_hash, role, created_at) VALUES (?1, ?2, 'owner', ?3)",
-            params![uuid::Uuid::new_v4().to_string(), code_hash, now],
+            "INSERT OR IGNORE INTO invites (id, code_hash, role, created_by, created_at, expires_at) VALUES (?1, ?2, 'owner', ?3, ?4, ?5)",
+            params![uuid::Uuid::new_v4().to_string(), code_hash, created_by, now, expires_at],
         )?;
         Ok(n > 0)
     }
@@ -176,22 +182,26 @@ impl Db {
     pub fn redeem_invite(&self, code_hash: &str, nickname: &str, secret_hash: &str, now: i64) -> Result<Redeem> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        let invite: Option<(String, String)> = tx
+        let invite: Option<(String, String, Option<String>)> = tx
             .query_row(
-                "SELECT id, role FROM invites
+                "SELECT id, role, created_by FROM invites
                  WHERE code_hash = ?1 AND used_by IS NULL AND (expires_at IS NULL OR expires_at > ?2)",
                 params![code_hash, now],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
-        let Some((invite_id, role)) = invite else {
+        let Some((invite_id, role, created_by)) = invite else {
             return Ok(Redeem::InvalidCode);
         };
         let role = Role::parse(&role)?;
         if role == Role::Owner {
             let owners: i64 = tx.query_row("SELECT COUNT(*) FROM members WHERE role = 'owner'", [], |r| r.get(0))?;
             if owners > 0 {
-                return Ok(Redeem::OwnerExists);
+                if created_by.as_deref() != Some(RECOVERY) {
+                    return Ok(Redeem::OwnerExists);
+                }
+                // The previous owner stays, as an admin.
+                tx.execute("UPDATE members SET role = 'admin' WHERE role = 'owner'", [])?;
             }
         }
         let member = Member {
@@ -341,8 +351,24 @@ mod tests {
         let Redeem::Ok(owner) = db.redeem_invite("owner-code", "izzy", "s1", 1).unwrap() else { panic!() };
         assert_eq!(owner.role, Role::Owner);
         assert!(matches!(db.redeem_invite("owner-code", "x", "s2", 2).unwrap(), Redeem::InvalidCode));
-        // A new bootstrap code cannot mint a second owner.
-        assert!(!db.ensure_owner_invite("another", 3).unwrap());
+    }
+
+    #[test]
+    fn a_redeploy_hands_ownership_back() {
+        let db = db();
+        db.ensure_owner_invite("first", 0).unwrap();
+        let Redeem::Ok(old) = db.redeem_invite("first", "izzy", "s1", 1).unwrap() else { panic!() };
+        // Restarting with the used code changes nothing.
+        assert!(!db.ensure_owner_invite("first", 2).unwrap());
+        // A redeploy brings a new code: its holder becomes the owner.
+        assert!(db.ensure_owner_invite("second", 3).unwrap());
+        let Redeem::Ok(new) = db.redeem_invite("second", "izzy", "s2", 4).unwrap() else { panic!() };
+        assert_eq!(new.role, Role::Owner);
+        assert_eq!(db.member(&old.id).unwrap().unwrap().role, Role::Admin);
+        assert!(matches!(db.redeem_invite("second", "x", "s3", 5).unwrap(), Redeem::InvalidCode));
+        // It expires if nobody finishes the redeploy.
+        assert!(db.ensure_owner_invite("third", 10).unwrap());
+        assert!(matches!(db.redeem_invite("third", "x", "s4", 10 + 24 * 3600 + 1).unwrap(), Redeem::InvalidCode));
     }
 
     #[test]

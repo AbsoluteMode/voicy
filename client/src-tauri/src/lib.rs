@@ -214,7 +214,8 @@ async fn deploy_server(app: AppHandle, req: DeployReq, on_log: Channel<String>) 
     let _ = on_log.send(format!("Сервер работает: https://{host}"));
     redeem(&app, &host, &code, &req.nickname).await.map_err(|e| {
         if e.code == "forbidden" {
-            CmdError::new("forbidden", "на этом сервере уже есть владелец: попроси у него ссылку-приглашение")
+            // Servers from before ownership recovery via redeploy.
+            CmdError::new("forbidden", "на этом сервере уже есть владелец: обнови сервер или попроси у владельца ссылку")
         } else {
             e
         }

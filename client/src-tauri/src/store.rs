@@ -54,6 +54,11 @@ pub fn token(host: &str) -> Result<Option<String>> {
 
 pub fn upsert(app: &AppHandle, server: SavedServer, token: Option<&str>) -> Result<()> {
     if let Some(token) = token {
+        // A new membership never silently destroys the previous login: it
+        // may be the owner's, which cannot be reissued.
+        if let Some(old) = self::token(&server.host)?.filter(|old| old != token) {
+            keyring::Entry::new("voicy", &format!("{}#previous", server.host))?.set_password(&old)?;
+        }
         entry(&server.host)?.set_password(token)?;
     }
     let mut all = load(app)?;
