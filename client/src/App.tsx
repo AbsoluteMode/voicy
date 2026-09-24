@@ -14,6 +14,33 @@ import { useVoice, voice } from "./lib/voice";
 
 type Dialog = { kind: "choose" } | { kind: "join"; link?: string; error?: string } | { kind: "create" } | null;
 
+/** First screen. Almost everyone arrives with an invite, so that comes first. */
+function Welcome({ onInvite, onCreate }: { onInvite: (link: string) => void; onCreate: () => void }) {
+  const [link, setLink] = useState("");
+  return (
+    <div className="welcome">
+      <div style={{ width: "min(460px, 100%)" }}>
+        <h1>Voicy</h1>
+        <p style={{ margin: "0 auto 24px" }}>Голосовой чат для своих. Друг прислал ссылку? Вставь её сюда.</p>
+        <form
+          className="linkbox"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (link.trim()) onInvite(link.trim());
+          }}
+        >
+          <input type="text" autoFocus placeholder="https://…/join/…" value={link} onChange={(e) => setLink(e.target.value)} />
+          <button className="btn primary" disabled={!link.trim()}>Войти</button>
+        </form>
+        <p style={{ marginTop: 28, fontSize: 13 }}>
+          Хочешь свой сервер?{" "}
+          <button className="linklike" onClick={onCreate}>Создать на своём VPS</button>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [servers, setServers] = useState<SavedServer[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -138,24 +165,15 @@ export default function App() {
         {current ? (
           <ServerView key={current.host} server={current} onChanged={reload} onRemoved={reload} />
         ) : (
-          <div className="welcome">
-            <div>
-              <h1>Voicy</h1>
-              <p>Голосовой чат для своих. Подними сервер на своём VPS или зайди к друзьям по ссылке.</p>
-              <div className="actions">
-                <button className="btn primary big" onClick={() => setDialog({ kind: "create" })}>Создать сервер</button>
-                <button className="btn big" onClick={() => setDialog({ kind: "join" })}>Подключиться</button>
-              </div>
-            </div>
-          </div>
+          <Welcome onInvite={(link) => setDialog({ kind: "join", link })} onCreate={() => setDialog({ kind: "create" })} />
         )}
       </main>
 
       {dialog?.kind === "choose" && (
         <Modal title="Добавить сервер" onClose={() => setDialog(null)}>
           <div className="row">
-            <button className="btn primary big" onClick={() => setDialog({ kind: "create" })}>Создать свой</button>
-            <button className="btn big" onClick={() => setDialog({ kind: "join" })}>По ссылке</button>
+            <button className="btn primary big" onClick={() => setDialog({ kind: "join" })}>По ссылке</button>
+            <button className="btn big" onClick={() => setDialog({ kind: "create" })}>Создать свой</button>
           </div>
         </Modal>
       )}

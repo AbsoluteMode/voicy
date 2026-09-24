@@ -1,6 +1,7 @@
 mod api;
 mod deploy;
 mod error;
+mod permissions;
 mod store;
 
 use rand::RngCore;
@@ -211,13 +212,16 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            use tauri::Manager;
             #[cfg(all(desktop, debug_assertions))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 // Installed builds register the scheme in the installer.
                 let _ = app.deep_link().register_all();
             }
-            let _ = app;
+            if let Some(window) = app.get_webview_window("main") {
+                permissions::allow_microphone(&window);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
