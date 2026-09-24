@@ -1,6 +1,6 @@
 [package]
 name = "voicy"
-version = "0.1.0"
+version = "0.1.1"
 description = "Voicy — voice chat for friends"
 authors = ["AbsoluteMode"]
 license = "MIT"

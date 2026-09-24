@@ -15,13 +15,15 @@ export interface AudioSettings {
   nickname: string;
 }
 
-// Raw by default: the processing in browsers is built for laptop speakers and
-// dulls a good microphone on headphones.
+// DeepFilterNet on by default, like Krisp in Discord: friends and family
+// should not have to configure anything to keep the keyboard out. The
+// browser's own echo cancellation and AGC stay off; they dull a good mic on
+// headphones.
 const DEFAULTS: AudioSettings = {
   inputDevice: "",
   outputDevice: "",
   bitrate: 128,
-  noise: "off",
+  noise: "standard",
   echoCancellation: false,
   autoGainControl: false,
   volumes: {},
