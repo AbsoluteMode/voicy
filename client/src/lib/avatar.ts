@@ -1,5 +1,5 @@
 import { getSettings } from "./settings";
-import { api, errorCode, listServers, Member } from "./tauri";
+import { api, listServers, Member } from "./tauri";
 
 export interface LocalAvatar {
   /** The cropped picture as a data: URL (WebP, or JPEG as a fallback). */
@@ -24,14 +24,29 @@ export interface Crop {
   size: number;
 }
 
-export async function renderAvatar(img: HTMLImageElement, crop: Crop): Promise<LocalAvatar> {
+function square(px: number) {
   const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = AVATAR_PX;
+  canvas.width = canvas.height = px;
   const ctx = canvas.getContext("2d")!;
   ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(img, crop.x, crop.y, crop.size, crop.size, 0, 0, AVATAR_PX, AVATAR_PX);
-  let blob = await new Promise<Blob | null>((ok) => canvas.toBlob(ok, "image/webp", 0.88));
-  if (!blob || blob.type !== "image/webp") blob = await new Promise<Blob | null>((ok) => canvas.toBlob(ok, "image/jpeg", 0.9));
+  return { canvas, ctx };
+}
+
+export async function renderAvatar(img: HTMLImageElement, crop: Crop): Promise<LocalAvatar> {
+  // Halve step by step: one big jump (a 2000 px photo down to 256) skips
+  // most source pixels and comes out grainy.
+  let px = Math.max(AVATAR_PX, Math.min(2048, Math.round(crop.size)));
+  let step = square(px);
+  step.ctx.drawImage(img, crop.x, crop.y, crop.size, crop.size, 0, 0, px, px);
+  while (px > AVATAR_PX) {
+    px = Math.max(AVATAR_PX, Math.round(px / 2));
+    const next = square(px);
+    next.ctx.drawImage(step.canvas, 0, 0, px, px);
+    step = next;
+  }
+  const { canvas } = step;
+  let blob = await new Promise<Blob | null>((ok) => canvas.toBlob(ok, "image/webp", 0.95));
+  if (!blob || blob.type !== "image/webp") blob = await new Promise<Blob | null>((ok) => canvas.toBlob(ok, "image/jpeg", 0.93));
   if (!blob) throw new Error("не удалось сохранить картинку");
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const url = await new Promise<string>((ok, fail) => {
@@ -43,8 +58,13 @@ export async function renderAvatar(img: HTMLImageElement, crop: Crop): Promise<L
   return { url, version: await versionOf(bytes) };
 }
 
-/** Uploads that failed for good (a server too old for avatars): not retried this session. */
-const refused = new Set<string>();
+/**
+ * When an upload last failed, by host and picture. A server may be too old
+ * for avatars, or restarting mid-upload; either way try again a bit later
+ * instead of hammering it on every poll or giving up for good.
+ */
+const failedAt = new Map<string, number>();
+const RETRY_MS = 60_000;
 
 /**
  * Brings our picture on `host` in line with the one chosen here. Returns
@@ -55,13 +75,14 @@ export async function syncAvatar(host: string, me: Member): Promise<boolean> {
   if (mine === undefined) return false;
   const want = mine?.version ?? null;
   const key = `${host} ${want}`;
-  if ((me.avatar ?? null) === want || refused.has(key)) return false;
+  if ((me.avatar ?? null) === want || Date.now() - (failedAt.get(key) ?? 0) < RETRY_MS) return false;
   try {
     if (mine) await api(host, "PUT", "/api/me/avatar", { data: mine.url.slice(mine.url.indexOf(",") + 1) });
     else await api(host, "DELETE", "/api/me/avatar");
+    failedAt.delete(key);
     return true;
   } catch (e) {
-    if (errorCode(e) !== "network") refused.add(key);
+    failedAt.set(key, Date.now());
     console.warn(`avatar sync with ${host} failed`, e);
     return false;
   }
