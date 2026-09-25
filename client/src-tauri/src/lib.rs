@@ -240,6 +240,31 @@ fn default_ssh_key() -> Option<String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// The taskbar and Start menu keep showing a cached icon for our exe path
+/// after an update changed it. On the first start of a new version, ask
+/// Explorer to reload icons.
+fn refresh_icons_after_update(app: &AppHandle) {
+    use tauri::Manager;
+    let version = app.package_info().version.to_string();
+    let Ok(dir) = app.path().app_config_dir() else { return };
+    let marker = dir.join("icons-refreshed-for");
+    if std::fs::read_to_string(&marker).ok().as_deref() == Some(version.as_str()) {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "shell32")]
+        extern "system" {
+            fn SHChangeNotify(event: i32, flags: u32, item1: *const std::ffi::c_void, item2: *const std::ffi::c_void);
+        }
+        const SHCNE_ASSOCCHANGED: i32 = 0x0800_0000;
+        // SAFETY: documented call with no items (SHCNF_IDLIST = 0, null pointers).
+        unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, 0, std::ptr::null(), std::ptr::null()) };
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(marker, version);
+}
+
 pub fn run() {
     tauri::Builder::default()
         // Must be first: a second launch (e.g. from a voicy:// link) hands its
@@ -263,6 +288,7 @@ pub fn run() {
                 // Installed builds register the scheme in the installer.
                 let _ = app.deep_link().register_all();
             }
+            refresh_icons_after_update(app.handle());
             let hk = hotkeys::Hotkeys::default();
             hk.start(app.handle().clone());
             app.manage(hk);

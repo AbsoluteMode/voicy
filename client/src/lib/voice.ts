@@ -149,23 +149,35 @@ function publishOptions(): TrackPublishOptions {
   };
 }
 
-/** Two short tones: rising when something turns on, falling when off. */
-function cue(kind: "on" | "off") {
+/**
+ * Short tones, rising when something starts and falling when it ends:
+ * mic/sound on and off, we join or leave a room, someone joins or leaves ours.
+ */
+const CUES = {
+  on: { tones: [520, 780], gap: 0.07, len: 0.09, level: 0.12 },
+  off: { tones: [640, 420], gap: 0.07, len: 0.09, level: 0.12 },
+  join: { tones: [440, 554, 659], gap: 0.08, len: 0.16, level: 0.1 },
+  leave: { tones: [659, 554, 440], gap: 0.08, len: 0.16, level: 0.1 },
+  peerJoin: { tones: [587, 880], gap: 0.09, len: 0.14, level: 0.07 },
+  peerLeave: { tones: [880, 587], gap: 0.09, len: 0.14, level: 0.07 },
+};
+
+function cue(kind: keyof typeof CUES) {
+  const { tones, gap, len, level } = CUES[kind];
   try {
     const ctx = new AudioContext();
-    const tones = kind === "on" ? [520, 780] : [640, 420];
     tones.forEach((hz, i) => {
       const osc = new OscillatorNode(ctx, { frequency: hz, type: "sine" });
       const gain = new GainNode(ctx, { gain: 0 });
-      const t = ctx.currentTime + i * 0.07;
+      const t = ctx.currentTime + i * gap;
       gain.gain.setValueAtTime(0, t);
-      gain.gain.linearRampToValueAtTime(0.12, t + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+      gain.gain.linearRampToValueAtTime(level, t + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + len);
       osc.connect(gain).connect(ctx.destination);
       osc.start(t);
-      osc.stop(t + 0.1);
+      osc.stop(t + len + 0.01);
     });
-    setTimeout(() => void ctx.close(), 400);
+    setTimeout(() => void ctx.close(), (tones.length * gap + len) * 1000 + 200);
   } catch {
     // Cues are a nicety.
   }
@@ -299,10 +311,14 @@ class VoiceSession {
 
       room
         .on(RoomEvent.ParticipantConnected, (p) => {
+          if (!this.snap.deafened) cue("peerJoin");
           this.applyVolume(p);
           this.refresh();
         })
-        .on(RoomEvent.ParticipantDisconnected, this.refresh)
+        .on(RoomEvent.ParticipantDisconnected, () => {
+          if (!this.snap.deafened) cue("peerLeave");
+          this.refresh();
+        })
         .on(RoomEvent.ActiveSpeakersChanged, this.refresh)
         .on(RoomEvent.TrackMuted, this.refresh)
         .on(RoomEvent.TrackUnmuted, this.refresh)
@@ -367,6 +383,7 @@ class VoiceSession {
                     ? undefined
                     : "lost";
           log("disconnected", { reason, endReason });
+          if (endReason) cue("leave");
           this.teardown();
           this.set({ ...IDLE, host, room: roomId, endReason });
         });
@@ -375,6 +392,7 @@ class VoiceSession {
       await room.connect(url, token, { autoSubscribe: true });
       if (stale()) return;
       log("connected");
+      cue("join");
       this.set({ state: "connected" });
       // Published closed even in push-to-talk mode, so the first press
       // does not wait for the mic and the noise model to start.
@@ -730,6 +748,7 @@ class VoiceSession {
 
   async disconnect() {
     log("leave");
+    if (this.room) cue("leave");
     void flushLogs();
     this.generation++;
     const { host, room } = this.snap;
