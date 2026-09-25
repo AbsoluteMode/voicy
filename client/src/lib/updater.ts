@@ -2,6 +2,8 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check, Update } from "@tauri-apps/plugin-updater";
 import { useSyncExternalStore } from "react";
 
+import { ask } from "./confirm";
+
 export type UpdateState =
   | { kind: "idle" }
   | { kind: "checking" }
@@ -67,8 +69,8 @@ export async function installUpdate() {
 }
 
 /** Installing restarts Voicy, so a live call gets a warning first. */
-export function confirmAndInstall(inCall: boolean) {
-  if (inCall && !confirm("Voicy перезапустится, и звонок прервётся. Обновить сейчас?")) return;
+export async function confirmAndInstall(inCall: boolean) {
+  if (inCall && !(await ask({ title: "Обновить сейчас?", text: "Voicy перезапустится, и звонок прервётся на пару секунд.", confirm: "Обновить" }))) return;
   void installUpdate();
 }
 

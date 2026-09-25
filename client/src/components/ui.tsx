@@ -1,9 +1,26 @@
-import { Crown, Headphones, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Crown, Headphones, HelpCircle, ShieldCheck, X } from "lucide-react";
 import { ReactNode, useEffect, useState } from "react";
 
+import { answer, usePendingAsk } from "../lib/confirm";
 import { Role } from "../lib/tauri";
 
-export function Modal({ title, sub, onClose, wide, children }: { title: string; sub?: ReactNode; onClose?: () => void; wide?: boolean; children: ReactNode }) {
+export type Tone = "accent" | "danger" | "neutral";
+
+/**
+ * Every dialog: a sheet from the bottom in the narrow window, a centered
+ * card when there is room. Title row with an optional icon and a close
+ * button; a `.foot` inside stays pinned while the body scrolls.
+ */
+export function Modal(props: {
+  title: string;
+  sub?: ReactNode;
+  icon?: ReactNode;
+  tone?: Tone;
+  onClose?: () => void;
+  wide?: boolean;
+  children: ReactNode;
+}) {
+  const { title, sub, icon, tone = "accent", onClose, wide, children } = props;
   useEffect(() => {
     if (!onClose) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -12,12 +29,44 @@ export function Modal({ title, sub, onClose, wide, children }: { title: string; 
   }, [onClose]);
   return (
     <div className="backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose?.()}>
-      <div className={`modal${wide ? " wide" : ""}`} role="dialog" aria-label={title}>
-        <h2>{title}</h2>
-        {sub && <p className="sub">{sub}</p>}
-        {children}
+      <div className={`modal${wide ? " wide" : ""}`} role="dialog" aria-modal aria-label={title}>
+        <header className="modal-head">
+          {icon && <div className={`modal-icon ${tone}`}>{icon}</div>}
+          <div className="modal-titles">
+            <h2>{title}</h2>
+            {sub && <p className="sub">{sub}</p>}
+          </div>
+          {onClose && (
+            <button type="button" className="icon-btn modal-x" onClick={onClose} aria-label="Закрыть">
+              <X size={18} />
+            </button>
+          )}
+        </header>
+        <div className="modal-body">{children}</div>
       </div>
     </div>
+  );
+}
+
+/** Renders questions from `ask()`; mounted once at the app root. */
+export function ConfirmHost() {
+  const q = usePendingAsk();
+  if (!q) return null;
+  return (
+    <Modal
+      title={q.title}
+      sub={q.text}
+      icon={q.danger ? <AlertTriangle size={20} /> : <HelpCircle size={20} />}
+      tone={q.danger ? "danger" : "accent"}
+      onClose={() => answer(false)}
+    >
+      <div className="foot">
+        <button type="button" className="btn" onClick={() => answer(false)}>Отмена</button>
+        <button type="button" className={`btn ${q.danger ? "danger solid" : "primary"}`} onClick={() => answer(true)}>
+          {q.confirm}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

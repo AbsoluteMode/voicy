@@ -1,8 +1,9 @@
+import { Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import { api, errorCode, errorText, SavedServer, SshCreds, uninstallServer } from "../lib/tauri";
 import { HostKeyPrompt, LogView, SshForm, useSshForm } from "./SshForm";
-import { Modal } from "./ui";
+import { Modal, Toggle } from "./ui";
 
 type Line = { text: string; kind?: "ok" | "err" };
 
@@ -46,6 +47,8 @@ export function DeleteDialog({ server, onClose, onDeleted }: { server: SavedServ
   return (
     <Modal
       title={`Удалить «${server.name}»`}
+      icon={<Trash2 size={20} />}
+      tone="danger"
       sub="Все участники и приглашения будут удалены. Это не отменить."
       onClose={busy ? undefined : onClose}
     >
@@ -53,15 +56,13 @@ export function DeleteDialog({ server, onClose, onDeleted }: { server: SavedServ
         <span>Введи название сервера, чтобы подтвердить</span>
         <input type="text" autoFocus value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={server.name} />
       </label>
-      <div className="toggle" style={{ borderTop: "none" }}>
-        <div>
-          <div className="t">Удалить и с VPS</div>
-          <div className="d">Остановить контейнеры и стереть файлы на сервере. Нужен SSH-доступ.</div>
-        </div>
-        <label className="switch">
-          <input type="checkbox" checked={wipeVps} onChange={(e) => setWipeVps(e.target.checked)} />
-          <i />
-        </label>
+      <div className="card">
+        <Toggle
+          title="Удалить и с VPS"
+          desc="Остановить контейнеры и стереть файлы на сервере. Нужен SSH-доступ."
+          checked={wipeVps}
+          onChange={setWipeVps}
+        />
       </div>
       {wipeVps && <SshForm form={ssh} disabled={busy} />}
       <HostKeyPrompt form={ssh} onApprove={() => void run(ssh.approveHostKey())} />
@@ -69,7 +70,7 @@ export function DeleteDialog({ server, onClose, onDeleted }: { server: SavedServ
       {error && <div className="error">{error}</div>}
       <div className="foot">
         {!busy && <button className="btn" onClick={onClose}>Отмена</button>}
-        <button className="btn danger" disabled={busy || !ready} onClick={() => void run()}>
+        <button className="btn danger solid" disabled={busy || !ready} onClick={() => void run()}>
           {busy ? "Удаляю…" : "Удалить навсегда"}
         </button>
       </div>

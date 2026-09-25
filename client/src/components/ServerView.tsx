@@ -2,6 +2,7 @@ import { ImagePlus, LogOut, Maximize2, Pencil, Search, Shield, ShieldOff, Trash2
 import { FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
 
 import { syncAvatar } from "../lib/avatar";
+import { ask } from "../lib/confirm";
 import { updateSettings, useSettings } from "../lib/settings";
 import { api, avatarUrl, errorCode, errorText, forgetServer, Member, Role, RoomInfo, SavedServer } from "../lib/tauri";
 import { EndReason, Peer, ScreenShare, useVoice, voice } from "../lib/voice";
@@ -434,7 +435,8 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
 
   async function leave() {
     setMenu(false);
-    if (!confirm(`Выйти с сервера «${name}»? Вернуться можно будет только по новой ссылке.`)) return;
+    const yes = await ask({ title: `Выйти с «${name}»?`, text: "Вернуться можно будет только по новой ссылке.", confirm: "Выйти", danger: true });
+    if (!yes) return;
     try {
       await api(server.host, "DELETE", "/api/me");
     } catch (e) {
@@ -682,7 +684,10 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
           className="icon-btn sm"
           title="Выгнать"
           aria-label="Выгнать"
-          onClick={() => confirm(`Выгнать ${m.nickname}? Вернуться можно будет только по новой ссылке.`) && act(() => api(server.host, "POST", `/api/members/${m.id}/kick`))}
+          onClick={async () => {
+            const yes = await ask({ title: `Выгнать ${m.nickname}?`, text: "Вернуться можно будет только по новой ссылке.", confirm: "Выгнать", danger: true });
+            if (yes) await act(() => api(server.host, "POST", `/api/members/${m.id}/kick`));
+          }}
         >
           <UserMinus size={14} />
         </button>
@@ -708,7 +713,7 @@ function RenameDialog(props: { host: string; current: string; onClose: () => voi
     }
   }
   return (
-    <Modal title="Название сервера" onClose={props.onClose}>
+    <Modal title="Название сервера" icon={<Pencil size={20} />} onClose={props.onClose}>
       <form onSubmit={save}>
         <label className="field">
           <span>Как назовём?</span>

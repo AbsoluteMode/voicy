@@ -1,4 +1,4 @@
-import { Search } from "lucide-react";
+import { Crop as CropIcon, Search } from "lucide-react";
 import { FormEvent, PointerEvent, useEffect, useRef, useState } from "react";
 
 import { Crop, renderAvatar, syncAvatarEverywhere } from "../lib/avatar";
@@ -80,7 +80,7 @@ function PickStep({ onPicked, onClose }: { onPicked: (url: string) => void; onCl
   }
 
   return (
-    <Modal title="Pinterest" sub="Найди картинку для аватара и нажми на неё." onClose={onClose} wide>
+    <Modal title="Pinterest" icon={<Search size={20} />} sub="Найди картинку для аватара и нажми на неё." onClose={onClose} wide>
       <form
         className="row pin-search"
         onSubmit={(e: FormEvent) => {
@@ -182,7 +182,7 @@ function CropStep({ src, back, onBack, onDone }: { src: string; back: string; on
   }
 
   return (
-    <Modal title="Кадрируем" sub="Двигай картинку и приближай колёсиком: сохранится то, что в круге." onClose={onBack}>
+    <Modal title="Кадрируем" icon={<CropIcon size={20} />} sub="Двигай картинку и приближай колёсиком: сохранится то, что в круге." onClose={onBack}>
       <div className="crop-wrap">
         <div
           className="cropper"

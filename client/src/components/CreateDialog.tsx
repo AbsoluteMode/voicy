@@ -3,6 +3,8 @@ import { FormEvent, useState } from "react";
 import { getSettings, updateSettings } from "../lib/settings";
 import { deployServer, errorText, SavedServer, SshCreds } from "../lib/tauri";
 import { HostKeyPrompt, LogView, SshForm, useSshForm } from "./SshForm";
+import { Server } from "lucide-react";
+
 import { Modal } from "./ui";
 
 type Line = { text: string; kind?: "ok" | "err" };
@@ -52,6 +54,7 @@ export function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCr
   return (
     <Modal
       title="Создать сервер"
+      icon={<Server size={20} />}
       sub="Нужен свой VPS на Ubuntu или Debian. Voicy сам зайдёт по SSH, поставит всё нужное и сделает тебя владельцем. Если Voicy там уже стоит, вернёт тебе права владельца, ничего не удаляя."
       onClose={running ? undefined : onClose}
     >

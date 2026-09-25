@@ -1,16 +1,16 @@
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { AlertCircle, Check, ChevronRight, Link2, Plus, RefreshCw, Server } from "lucide-react";
 import { MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { CreateDialog } from "./components/CreateDialog";
 import { JoinDialog } from "./components/JoinDialog";
 import { DownloadIcon, Logo, PlusIcon } from "./components/icons";
 import { ServerView } from "./components/ServerView";
-import { Modal } from "./components/ui";
-import { initials } from "./components/ui";
+import { ConfirmHost, initials, Modal } from "./components/ui";
 import { applyHotkeys } from "./lib/hotkeys";
 import { getSettings, useSettings } from "./lib/settings";
 import { api, errorText, inviteFromClipboard, joinServer, listServers, RoomInfo, SavedServer } from "./lib/tauri";
-import { confirmAndInstall, useUpdater } from "./lib/updater";
+import { checkForUpdate, confirmAndInstall, useUpdater } from "./lib/updater";
 import { useVoice, voice } from "./lib/voice";
 
 type Dialog = { kind: "choose" } | { kind: "join"; link?: string; error?: string } | { kind: "create" } | null;
@@ -148,7 +148,15 @@ export default function App() {
   }, [hotkeys, pushToTalk]);
 
   const update = useUpdater();
-  const startUpdate = () => confirmAndInstall(v.state !== "idle");
+  const startUpdate = () => void confirmAndInstall(v.state !== "idle");
+  // The result of a manual check shows on the button for a moment.
+  const [flash, setFlash] = useState<"latest" | "error" | null>(null);
+  useEffect(() => {
+    if (update.kind !== "latest" && update.kind !== "error") return;
+    setFlash(update.kind);
+    const t = setTimeout(() => setFlash(null), 2500);
+    return () => clearTimeout(t);
+  }, [update]);
 
   const current = servers.find((s) => s.host === selected);
   const spot = useSpotlight();
@@ -187,6 +195,25 @@ export default function App() {
             {update.percent === null ? "…" : `${update.percent}%`}
           </div>
         )}
+        {update.kind !== "available" && update.kind !== "installing" && (
+          <button
+            className={`rail-btn check${flash ? ` ${flash}` : ""}`}
+            title={
+              update.kind === "checking"
+                ? "Проверяю обновления…"
+                : flash === "latest"
+                  ? "Это последняя версия"
+                  : flash === "error" && update.kind === "error"
+                    ? `Не удалось проверить: ${update.message}`
+                    : "Проверить обновления"
+            }
+            aria-label="Проверить обновления"
+            disabled={update.kind === "checking"}
+            onClick={() => void checkForUpdate(true)}
+          >
+            {flash === "latest" ? <Check size={17} /> : flash === "error" ? <AlertCircle size={17} /> : <RefreshCw size={16} className={update.kind === "checking" ? "spin" : undefined} />}
+          </button>
+        )}
       </nav>
 
       <main className="main" {...spot}>
@@ -198,10 +225,24 @@ export default function App() {
       </main>
 
       {dialog?.kind === "choose" && (
-        <Modal title="Добавить сервер" onClose={() => setDialog(null)}>
-          <div className="row">
-            <button className="btn green big" onClick={() => setDialog({ kind: "join" })}>По ссылке</button>
-            <button className="btn big" onClick={() => setDialog({ kind: "create" })}>Создать свой</button>
+        <Modal title="Добавить сервер" icon={<Plus size={20} />} onClose={() => setDialog(null)}>
+          <div className="choices">
+            <button className="choice" onClick={() => setDialog({ kind: "join" })}>
+              <span className="choice-icon accent"><Link2 size={20} /></span>
+              <span className="choice-text">
+                <b>По ссылке</b>
+                <small>Друг прислал приглашение</small>
+              </span>
+              <ChevronRight size={18} className="choice-go" />
+            </button>
+            <button className="choice" onClick={() => setDialog({ kind: "create" })}>
+              <span className="choice-icon"><Server size={20} /></span>
+              <span className="choice-text">
+                <b>Создать свой</b>
+                <small>Нужен VPS, остальное Voicy сделает сам</small>
+              </span>
+              <ChevronRight size={18} className="choice-go" />
+            </button>
           </div>
         </Modal>
       )}
@@ -215,6 +256,7 @@ export default function App() {
         />
       )}
       {dialog?.kind === "create" && <CreateDialog onClose={() => setDialog(null)} onCreated={(s) => added(s, false)} />}
+      <ConfirmHost />
     </div>
   );
 }

@@ -1,13 +1,52 @@
 import { getVersion } from "@tauri-apps/api/app";
-import { Play, Square, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Headphones, Info, Keyboard, Mic, PhoneCall, Play, Settings, Square, X } from "lucide-react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 
 import { accelFrom, accelFromMouse, applyHotkeys, HotkeyErrors, prettyAccel } from "../lib/hotkeys";
 import { VoicyNoiseProcessor } from "../lib/noise";
 import { AudioSettings, getSettings, Hotkeys, updateSettings, useSettings } from "../lib/settings";
-import { checkForUpdate, confirmAndInstall, useUpdater } from "../lib/updater";
+import { confirmAndInstall, useUpdater } from "../lib/updater";
 import { useVoice, voice } from "../lib/voice";
+import { Logo } from "./icons";
 import { Modal, Toggle } from "./ui";
+
+function Section({ icon, title, hint, children }: { icon: ReactNode; title: string; hint?: string; children: ReactNode }) {
+  return (
+    <section className="set-section">
+      <h3>
+        {icon}
+        {title}
+      </h3>
+      {hint && <p className="hint">{hint}</p>}
+      <div className="card">{children}</div>
+    </section>
+  );
+}
+
+/** A device picker as a card row: label with an icon, then the select. */
+function DeviceRow(props: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+  devices: MediaDeviceInfo[];
+  fallback: string;
+  onChange: (id: string) => void;
+}) {
+  return (
+    <label className="card-row device">
+      <span className="row-label">
+        {props.icon}
+        {props.label}
+      </span>
+      <select value={props.value} onChange={(e) => props.onChange(e.target.value)}>
+        <option value="">По умолчанию</option>
+        {props.devices.map((d) => (
+          <option key={d.deviceId} value={d.deviceId}>{d.label || props.fallback}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
 
 function useDevices() {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -93,24 +132,23 @@ function MicMeter({ s }: { s: AudioSettings }) {
   }, [on, s.inputDevice, s.echoCancellation, s.noise, s.autoGainControl]);
 
   return (
-    <div className="field">
-      <span>Проверка микрофона</span>
-      <div className="row" style={{ alignItems: "center" }}>
-        <button
-          type="button"
-          className={`icon-btn${on ? " on" : ""}`}
-          style={{ flex: "none" }}
-          onClick={() => setOn(!on)}
-          aria-label={on ? "Остановить" : "Послушать себя"}
-          title={on ? "Остановить" : "Послушать себя так, как тебя слышат друзья (в наушниках)"}
-        >
-          {on ? <Square size={14} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
-        </button>
-        <div className="meter" style={{ flex: 1 }}>
+    <div className="card-row mic-test">
+      <button
+        type="button"
+        className={`play${on ? " on" : ""}`}
+        onClick={() => setOn(!on)}
+        aria-label={on ? "Остановить" : "Послушать себя"}
+        title={on ? "Остановить" : "Послушать себя так, как тебя слышат друзья (в наушниках)"}
+      >
+        {on ? <Square size={13} fill="currentColor" /> : <Play size={15} fill="currentColor" />}
+      </button>
+      <div className="mic-test-body">
+        <div className="t">{on ? "Так тебя слышат друзья" : "Проверка микрофона"}</div>
+        <div className="meter">
           <i style={{ width: `${level * 100}%` }} />
         </div>
+        {status && <div className="d">{status}</div>}
       </div>
-      {status && <small>{status}</small>}
     </div>
   );
 }
@@ -128,52 +166,32 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Modal title="Настройки" onClose={onClose}>
-      <label className="field">
-        <span>Микрофон</span>
-        <select value={s.inputDevice} onChange={(e) => apply({ inputDevice: e.target.value })}>
-          <option value="">По умолчанию</option>
-          {inputs.map((d) => (
-            <option key={d.deviceId} value={d.deviceId}>{d.label || "Микрофон"}</option>
-          ))}
-        </select>
-      </label>
-      <label className="field">
-        <span>Вывод звука</span>
-        <select value={s.outputDevice} onChange={(e) => apply({ outputDevice: e.target.value })}>
-          <option value="">По умолчанию</option>
-          {outputs.map((d) => (
-            <option key={d.deviceId} value={d.deviceId}>{d.label || "Динамики"}</option>
-          ))}
-        </select>
-      </label>
-      <MicMeter s={s} />
-      <div className="field">
+    <Modal title="Настройки" icon={<Settings size={20} />} onClose={onClose}>
+      <Section icon={<Mic size={15} />} title="Звук">
+        <DeviceRow icon={<Mic size={16} />} label="Микрофон" value={s.inputDevice} devices={inputs} fallback="Микрофон" onChange={(id) => apply({ inputDevice: id })} />
+        <DeviceRow icon={<Headphones size={16} />} label="Наушники" value={s.outputDevice} devices={outputs} fallback="Динамики" onChange={(id) => apply({ outputDevice: id })} />
+        <MicMeter s={s} />
         <Toggle
           title="Шумоподавление"
           desc="Убирает фон, клавиатуру и щелчки. Голос остаётся естественным."
           checked={s.noise !== "off"}
           onChange={(on) => apply({ noise: on ? "standard" : "off" })}
         />
-      </div>
+      </Section>
       {v.state !== "idle" && (
-        <div className="field">
-          <span>В звонке</span>
-          <div>
-            <Toggle
-              title="Эхо-тест"
-              desc="Слышать себя через сервер так, как тебя слышат друзья. Только в наушниках."
-              checked={v.echo}
-              onChange={(on) => void voice.setEcho(on).catch(() => {})}
-            />
-          </div>
-        </div>
+        <Section icon={<PhoneCall size={15} />} title="В звонке">
+          <Toggle
+            title="Эхо-тест"
+            desc="Слышать себя через сервер так, как тебя слышат друзья. Только в наушниках."
+            checked={v.echo}
+            onChange={(on) => void voice.setEcho(on).catch(() => {})}
+          />
+        </Section>
       )}
       <HotkeysSection />
-      <AboutRow />
-      <div className="foot">
-        <button className="btn primary" onClick={onClose}>Готово</button>
-      </div>
+      <Section icon={<Info size={15} />} title="О программе">
+        <AboutRow />
+      </Section>
     </Modal>
   );
 }
@@ -202,18 +220,17 @@ function AboutRow() {
               : "";
 
   return (
-    <div className="toggle" style={{ borderTop: "1px solid var(--line)", marginTop: 6 }}>
+    <div className="toggle about">
+      <span className="about-logo">
+        <Logo size={22} />
+      </span>
       <div>
         <div className="t">Voicy {version && `v${version}`}</div>
-        <div className="d">{status || "Обновления проверяются сами каждые полчаса"}</div>
+        <div className="d">{status || "Обновления проверяются сами каждые полчаса или кнопкой слева внизу"}</div>
       </div>
       {update.kind === "available" ? (
-        <button className="btn green" onClick={() => confirmAndInstall(v.state !== "idle")}>Обновить</button>
-      ) : (
-        <button className="btn" disabled={update.kind === "checking" || update.kind === "installing"} onClick={() => void checkForUpdate(true)}>
-          Проверить обновления
-        </button>
-      )}
+        <button className="btn green" onClick={() => void confirmAndInstall(v.state !== "idle")}>Обновить</button>
+      ) : null}
     </div>
   );
 }
@@ -221,14 +238,14 @@ function AboutRow() {
 /** A binding shown as a button: click, then press keys or a mouse side button. */
 function HotkeyButton(props: { value: string | null; editing: boolean; onEdit: () => void; onClear: () => void }) {
   return (
-    <div className="row" style={{ flex: "none", gap: 6, alignItems: "center" }}>
+    <div className="hotkey-wrap">
       <button
         type="button"
         className={`btn hotkey${props.editing ? " primary" : ""}`}
         onClick={props.onEdit}
         title="Нажми и введи клавиши или кнопку мыши. Esc — отмена"
       >
-        {props.editing ? "Нажми клавишу или кнопку мыши…" : prettyAccel(props.value)}
+        {props.editing ? "Жми клавишу…" : prettyAccel(props.value)}
       </button>
       {props.value && !props.editing && (
         <button type="button" className="icon-btn sm" onClick={props.onClear} title="Убрать">
@@ -305,20 +322,11 @@ function HotkeysSection() {
   };
 
   return (
-    <div className="field">
-      <span>Горячие клавиши</span>
-      <small>Работают, даже когда Voicy свёрнут или ты в игре. Можно назначить боковые кнопки мыши.</small>
-      <div>
-        {row("mute", "Микрофон вкл/выкл")}
-        {row("deafen", "Звук вкл/выкл")}
-        <Toggle
-          title="Режим рации"
-          desc="Микрофон включается, только пока держишь клавишу"
-          checked={s.pushToTalk}
-          onChange={setPtt}
-        />
-        {s.pushToTalk && row("ptt", "Клавиша рации")}
-      </div>
-    </div>
+    <Section icon={<Keyboard size={15} />} title="Горячие клавиши" hint="Работают и в игре, и когда Voicy свёрнут. Подходят боковые кнопки мыши.">
+      {row("mute", "Микрофон вкл/выкл")}
+      {row("deafen", "Звук вкл/выкл")}
+      <Toggle title="Режим рации" desc="Микрофон включается, только пока держишь клавишу" checked={s.pushToTalk} onChange={setPtt} />
+      {s.pushToTalk && row("ptt", "Клавиша рации")}
+    </Section>
   );
 }

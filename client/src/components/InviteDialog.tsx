@@ -1,19 +1,14 @@
-import { Check, Copy } from "lucide-react";
-import { useState } from "react";
+import { Check, Copy, RefreshCw, UserPlus } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { api, errorText, Invite } from "../lib/tauri";
 import { Modal } from "./ui";
 
-const LIFETIMES = [
-  { hours: 1, label: "1 час" },
-  { hours: 24, label: "Сутки" },
-  { hours: 72, label: "3 дня" },
-  { hours: 168, label: "Неделя" },
-  { hours: 0, label: "Бессрочно" },
-];
-
+/**
+ * A fresh link as soon as the dialog opens: no expiry to pick, just copy.
+ * Each link still admits one person.
+ */
 export function InviteDialog({ host, onClose }: { host: string; onClose: () => void }) {
-  const [hours, setHours] = useState(72);
   const [link, setLink] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -24,7 +19,7 @@ export function InviteDialog({ host, onClose }: { host: string; onClose: () => v
     setError("");
     setCopied(false);
     try {
-      const inv = await api<Invite>(host, "POST", "/api/invites", { expires_in_hours: hours });
+      const inv = await api<Invite>(host, "POST", "/api/invites", { expires_in_hours: 0 });
       setLink(inv.link ?? "");
     } catch (e) {
       setError(errorText(e));
@@ -33,41 +28,31 @@ export function InviteDialog({ host, onClose }: { host: string; onClose: () => v
     }
   }
 
+  useEffect(() => {
+    void create();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function copy() {
     await navigator.clipboard.writeText(link);
     setCopied(true);
   }
 
   return (
-    <Modal title="Пригласить друга" sub="Ссылка персональная: по ней может войти только один человек. Для каждого друга создай свою." onClose={onClose}>
-      <div className="field">
-        <span>Срок действия</span>
-        <div className="seg">
-          {LIFETIMES.map((l) => (
-            <button key={l.hours} type="button" className={hours === l.hours ? "on" : ""} onClick={() => setHours(l.hours)}>
-              {l.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      {link && (
-        <div className="field">
-          <span>Ссылка</span>
-          <div className="linkbox">
-            <input type="text" readOnly value={link} onFocus={(e) => e.target.select()} />
-            <button className="btn" onClick={copy}>
-              {copied ? <Check size={16} /> : <Copy size={16} />}
-              {copied ? "Скопировано" : "Копировать"}
-            </button>
-          </div>
-          <small>Отправь её в любой мессенджер. Друг кликнет, скачает Voicy, и приглашение подхватится само.</small>
-        </div>
-      )}
+    <Modal
+      title="Пригласить друга"
+      sub="Ссылка на одного человека. Для каждого друга — своя."
+      icon={<UserPlus size={20} />}
+      onClose={onClose}
+    >
+      <button className={`btn big copy-link${copied ? " green" : " primary"}`} disabled={!link} onClick={copy}>
+        {copied ? <Check size={18} /> : <Copy size={18} />}
+        {!link ? "Создаю ссылку…" : copied ? "Ссылка скопирована" : "Скопировать ссылку"}
+      </button>
+      <p className="hint">Отправь в любой мессенджер. Друг кликнет, скачает Voicy, и приглашение подхватится само.</p>
       {error && <div className="error">{error}</div>}
       <div className="foot">
-        <button className="btn" onClick={onClose}>Закрыть</button>
-        <button className="btn primary" disabled={busy} onClick={create}>
-          {link ? "Ещё одна ссылка" : "Создать ссылку"}
+        <button className="btn" disabled={busy} onClick={create}>
+          <RefreshCw size={15} /> Новая ссылка
         </button>
       </div>
     </Modal>

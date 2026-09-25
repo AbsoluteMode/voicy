@@ -1,3 +1,4 @@
+import { Link2 } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 
 import { getSettings, updateSettings } from "../lib/settings";
@@ -59,6 +60,7 @@ export function JoinDialog(props: {
   return (
     <Modal
       title={serverName ? `Тебя зовут на «${serverName}»` : "Подключиться к серверу"}
+      icon={<Link2 size={20} />}
       sub={invited ? "Впиши ник, под которым тебя увидят друзья." : "Вставь ссылку-приглашение, которую тебе прислали."}
       onClose={onClose}
     >
