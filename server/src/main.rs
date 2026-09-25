@@ -6,6 +6,7 @@ mod diag;
 mod error;
 mod invite_page;
 mod livekit;
+mod presence;
 mod rooms;
 
 use std::{env, net::SocketAddr, sync::Arc};
@@ -65,6 +66,7 @@ pub struct AppState {
     pub cfg: Config,
     pub db: db::Db,
     pub lk: livekit::LiveKit,
+    pub presence: presence::Presence,
 }
 
 impl AppState {
@@ -98,7 +100,7 @@ async fn main() -> Result<()> {
     let lk = livekit::LiveKit::new(&cfg.livekit_api_url, &cfg.livekit_key, &cfg.livekit_secret);
 
     let bind = cfg.bind;
-    let state = Arc::new(AppState { cfg, db, lk });
+    let state = Arc::new(AppState { cfg, db, lk, presence: Default::default() });
     diag::spawn_host_sampler(diag::logs_dir(&state.cfg.db_path));
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("voicy-server listening on {bind}");

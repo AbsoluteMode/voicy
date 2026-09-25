@@ -240,6 +240,21 @@ fn default_ssh_key() -> Option<String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Tells every saved server that this app is running, so friends see us
+/// online. Runs here rather than in the page, whose timers Windows slows
+/// down while the window is minimized.
+async fn heartbeat(app: AppHandle) {
+    loop {
+        for server in store::load(&app).unwrap_or_default() {
+            if let Ok(Some(token)) = store::token(&server.host) {
+                // Best effort: servers from before presence just say 404.
+                let _ = api::request(&server.host, Some(&token), Method::POST, "/api/ping", None).await;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    }
+}
+
 /// The taskbar and Start menu keep showing a cached icon for our exe path
 /// after an update changed it. On the first start of a new version, ask
 /// Explorer to reload icons.
@@ -289,6 +304,7 @@ pub fn run() {
                 let _ = app.deep_link().register_all();
             }
             refresh_icons_after_update(app.handle());
+            tauri::async_runtime::spawn(heartbeat(app.handle().clone()));
             let hk = hotkeys::Hotkeys::default();
             hk.start(app.handle().clone());
             app.manage(hk);

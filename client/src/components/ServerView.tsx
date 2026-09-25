@@ -302,7 +302,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
 
   // Fallback for changes made while this member is not in the room.
   useEffect(() => {
-    const t = setInterval(() => void loadMembers(), 30_000);
+    const t = setInterval(() => void loadMembers(), 15_000);
     return () => clearInterval(t);
   }, [loadMembers]);
 
@@ -356,7 +356,12 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
     if (connected) ids.add(server.member_id);
     return ids;
   }, [others, here, v.peers, connected, server.member_id]);
+  // Not in voice: who has Voicy open first, like Discord.
+  const byName = (a: Member, b: Member) => a.nickname.localeCompare(b.nickname);
   const away = members.filter((m) => !inVoice.has(m.id));
+  const isOnline = (m: Member) => m.id === server.member_id || m.online === true;
+  const awayOnline = away.filter(isOnline).sort(byName);
+  const awayOffline = away.filter((m) => !isOnline(m)).sort(byName);
 
   async function join(roomId: string) {
     setError("");
@@ -585,19 +590,24 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
           );
         })}
 
-        {away.length > 0 && (
-          <>
-            <div className="sec-label" style={{ marginTop: 6 }}>Не в голосе · {away.length}</div>
-            {away.map((m) => {
+        {[
+          { list: awayOnline, label: "В сети", online: true },
+          { list: awayOffline, label: "Не в сети", online: false },
+        ].map(({ list, label, online }) => list.length > 0 && (
+          <div key={label} className={`away${online ? " online" : ""}`}>
+            <div className="sec-label" style={{ marginTop: 6 }}>{label} · {list.length}</div>
+            {list.map((m) => {
               const self = m.id === server.member_id;
               return (
               <div
                 className={`mrow${self ? " self" : ""}`}
                 key={m.id}
                 onClick={self ? () => setMeMenu(!meMenu) : undefined}
-                title={self ? "Нажми, чтобы сменить аватар" : undefined}
+                title={self ? "Нажми, чтобы сменить аватар или ник" : undefined}
               >
-                <Avatar className="av off" id={m.id} name={m.nickname} src={avatarFor(m.id)} plain />
+                <Avatar className={`av ${online ? "sm" : "off"}`} id={m.id} name={m.nickname} src={avatarFor(m.id)} plain={!online}>
+                  {online && <i className="online-dot" />}
+                </Avatar>
                 <div className="name">
                   {m.nickname}
                   {m.id === server.member_id && <span style={{ color: "var(--faint)" }}> · ты</span>}
@@ -608,8 +618,8 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
               </div>
               );
             })}
-          </>
-        )}
+          </div>
+        ))}
       </section>
 
       <footer className="dock-wrap">

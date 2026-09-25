@@ -34,6 +34,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/token", post(token))
         .route("/api/rooms", get(rooms))
         .route("/api/members", get(members))
+        .route("/api/ping", post(ping))
         .route("/api/members/{id}/kick", post(kick))
         .route("/api/members/{id}/role", post(set_role))
         .route("/api/members/{id}/move", post(move_member))
@@ -232,8 +233,28 @@ where
     }
 }
 
-async fn members(State(s): State<SharedState>, _auth: AuthMember) -> ApiResult<Json<Vec<Member>>> {
-    Ok(Json(s.db.members()?))
+#[derive(Serialize)]
+struct MemberView {
+    #[serde(flatten)]
+    member: Member,
+    /// Has Voicy open right now (see `presence`).
+    online: bool,
+}
+
+async fn members(State(s): State<SharedState>, _auth: AuthMember) -> ApiResult<Json<Vec<MemberView>>> {
+    let now = now();
+    let members = s.db.members()?;
+    Ok(Json(
+        members
+            .into_iter()
+            .map(|member| MemberView { online: s.presence.is_online(&member.id, now), member })
+            .collect(),
+    ))
+}
+
+/// Heartbeat from a running app; authenticating is all it takes.
+async fn ping(_auth: AuthMember) -> StatusCode {
+    StatusCode::NO_CONTENT
 }
 
 /// Admins may act on members; the owner may act on everyone else.

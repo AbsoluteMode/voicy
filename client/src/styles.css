@@ -469,3 +469,12 @@ select option { background: var(--panel-2); color: var(--text); }
 @keyframes breathe-dim { 50% { opacity: .55; } }
 .dbtn, .rail-btn, .icon-btn, .btn { transition: background .15s, color .15s, opacity .15s, transform .1s; }
 .dbtn:active:not(:disabled), .btn:active:not(:disabled) { transform: scale(.97); }
+
+/* ─── Presence ────────────────────────────────────────────── */
+.av { position: relative; }
+.online-dot {
+  position: absolute; right: -2px; bottom: -2px; width: 10px; height: 10px; border-radius: 50%;
+  background: #45d483; box-shadow: 0 0 0 2.5px var(--surface);
+}
+.away:not(.online) .mrow { opacity: .7; }
+.away:not(.online) .mrow:hover { opacity: 1; }

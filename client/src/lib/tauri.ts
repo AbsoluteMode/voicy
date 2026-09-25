@@ -17,6 +17,8 @@ export interface Member {
   created_at: number;
   /** Picture version, see `avatarUrl`; null when there is none. */
   avatar?: string | null;
+  /** Has Voicy open right now; absent on servers from before presence. */
+  online?: boolean;
 }
 
 /** A voice room from `/api/rooms`: all occupied rooms plus one empty. */

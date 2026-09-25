@@ -53,6 +53,7 @@ impl FromRequestParts<SharedState> for AuthMember {
         if member.secret_hash != hash(secret) {
             return Err(ApiError::Unauthorized);
         }
+        state.presence.touch(&member.id, crate::db::now());
         Ok(AuthMember(member))
     }
 }
