@@ -108,7 +108,8 @@ function ScreenTile({ screen }: { screen: ScreenShare }) {
  * Opens under our own row: "change avatar", then a file or Pinterest.
  * Clicks on the row itself are left to the row, which toggles the menu.
  */
-function MeMenu({ onClose, onFile, onPinterest }: { onClose: () => void; onFile: (f: File) => void; onPinterest: () => void }) {
+function MeMenu(props: { onClose: () => void; onFile: (f: File) => void; onPinterest: () => void; onNickname: () => void }) {
+  const { onClose, onFile, onPinterest } = props;
   const s = useSettings();
   const [choosing, setChoosing] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -126,9 +127,14 @@ function MeMenu({ onClose, onFile, onPinterest }: { onClose: () => void; onFile:
   return (
     <div className="menu-pop me-pop" ref={ref} onClick={(e) => e.stopPropagation()}>
       {!choosing ? (
-        <button onClick={() => setChoosing(true)}>
-          <ImagePlus size={16} /> Изменить аватар
-        </button>
+        <>
+          <button onClick={() => setChoosing(true)}>
+            <ImagePlus size={16} /> Изменить аватар
+          </button>
+          <button onClick={props.onNickname}>
+            <Pencil size={16} /> Изменить ник
+          </button>
+        </>
       ) : (
         <>
           <button onClick={() => file.current?.click()}>
@@ -167,7 +173,7 @@ function MeMenu({ onClose, onFile, onPinterest }: { onClose: () => void; onFile:
 /**
  * One person in the call. Volume lives under the mouse wheel (right click
  * resets it) and is only shown when it is not 100% or while changing it.
- * Our own row opens the avatar menu (`children`) on click.
+ * Our own row opens the avatar and nickname menu (`children`) on click.
  */
 function PeerRow(props: {
   peer: Peer;
@@ -245,7 +251,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
   const [role, setRole] = useState<Role>(server.role);
   const [name, setName] = useState(server.name);
   const [fatal, setFatal] = useState<"unauthorized" | "gone" | null>(null);
-  const [dialog, setDialog] = useState<null | "invite" | "settings" | "delete" | "rename" | "avatar">(null);
+  const [dialog, setDialog] = useState<null | "invite" | "settings" | "delete" | "rename" | "avatar" | "nick">(null);
   const [meMenu, setMeMenu] = useState(false);
   const closeMeMenu = useCallback(() => setMeMenu(false), []);
   // Set when the avatar comes from disk: the dialog starts at framing it.
@@ -643,6 +649,17 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
       {dialog === "settings" && <SettingsDialog onClose={() => setDialog(null)} />}
       {dialog === "avatar" && <AvatarDialog file={avatarFile} onClose={() => setDialog(null)} />}
       {dialog === "delete" && <DeleteDialog server={server} onClose={() => setDialog(null)} onDeleted={forget} />}
+      {dialog === "nick" && (
+        <NicknameDialog
+          host={server.host}
+          current={members.find((m) => m.id === server.member_id)?.nickname ?? server.nickname}
+          onClose={() => setDialog(null)}
+          onSaved={() => {
+            setDialog(null);
+            void loadMembers();
+          }}
+        />
+      )}
       {dialog === "rename" && (
         <RenameDialog
           host={server.host}
@@ -664,7 +681,11 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
       setAvatarFile(file);
       setDialog("avatar");
     };
-    return <MeMenu onClose={closeMeMenu} onFile={open} onPinterest={() => open()} />;
+    const nick = () => {
+      setMeMenu(false);
+      setDialog("nick");
+    };
+    return <MeMenu onClose={closeMeMenu} onFile={open} onPinterest={() => open()} onNickname={nick} />;
   }
 
   function memberActions(m: Member) {
@@ -718,6 +739,40 @@ function RenameDialog(props: { host: string; current: string; onClose: () => voi
         <label className="field">
           <span>Как назовём?</span>
           <input type="text" autoFocus maxLength={48} value={value} onChange={(e) => setValue(e.target.value)} />
+        </label>
+        {error && <div className="error">{error}</div>}
+        <div className="foot">
+          <button type="button" className="btn" onClick={props.onClose}>Отмена</button>
+          <button className="btn primary" disabled={busy || !value.trim() || value.trim() === props.current}>Сохранить</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/** Nickname on this server; everyone sees it change, also mid-call. */
+function NicknameDialog(props: { host: string; current: string; onClose: () => void; onSaved: () => void }) {
+  const [value, setValue] = useState(props.current);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api(props.host, "PATCH", "/api/me", { nickname: value.trim() });
+      props.onSaved();
+    } catch (err) {
+      setError(errorText(err));
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title="Твой ник" sub="Так тебя видят на этом сервере." icon={<Pencil size={20} />} onClose={props.onClose}>
+      <form onSubmit={save}>
+        <label className="field">
+          <span>Ник</span>
+          <input type="text" autoFocus maxLength={32} value={value} onChange={(e) => setValue(e.target.value)} />
         </label>
         {error && <div className="error">{error}</div>}
         <div className="foot">

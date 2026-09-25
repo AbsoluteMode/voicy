@@ -111,6 +111,9 @@ async fn update_me(
 ) -> ApiResult<Json<Member>> {
     m.nickname = clean_nickname(&req.nickname)?;
     s.db.set_nickname(&m.id, &m.nickname)?;
+    // A live session keeps the name from its token; rename it there too.
+    let (lk, id, nick) = (&s.lk, &m.id, &m.nickname);
+    each_room(&s, "rename", |room| async move { lk.update_name(&room, id, nick).await }).await;
     Ok(Json(m))
 }
 
