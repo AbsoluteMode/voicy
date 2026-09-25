@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
@@ -33,6 +33,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/avatars/{id}", get(avatar))
         .route("/api/token", post(token))
         .route("/api/rooms", get(rooms))
+        .route("/api/rooms/{room}/messages", get(chat_messages).post(send_chat_message))
         .route("/api/members", get(members))
         .route("/api/members/{id}/kick", post(kick))
         .route("/api/members/{id}/role", post(set_role))
@@ -210,6 +211,44 @@ async fn live_rooms(s: &SharedState) -> anyhow::Result<BTreeMap<u32, Vec<RoomPee
 
 async fn rooms(State(s): State<SharedState>, _auth: AuthMember) -> ApiResult<Json<Vec<RoomView>>> {
     Ok(Json(layout(live_rooms(&s).await?)))
+}
+
+#[derive(Deserialize, Default)]
+struct ChatQuery {
+    after: Option<i64>,
+}
+
+async fn chat_messages(
+    State(s): State<SharedState>,
+    AuthMember(_m): AuthMember,
+    Path(room): Path<String>,
+    Query(query): Query<ChatQuery>,
+) -> ApiResult<Json<Vec<crate::db::ChatMessage>>> {
+    if parse_room(&room).is_none() {
+        return Err(ApiError::BadRequest("unknown room"));
+    }
+    Ok(Json(s.db.chat_messages(&room, query.after.unwrap_or(0).max(0))?))
+}
+
+#[derive(Deserialize)]
+struct ChatReq {
+    text: String,
+}
+
+async fn send_chat_message(
+    State(s): State<SharedState>,
+    AuthMember(m): AuthMember,
+    Path(room): Path<String>,
+    Json(req): Json<ChatReq>,
+) -> ApiResult<Json<crate::db::ChatMessage>> {
+    if parse_room(&room).is_none() {
+        return Err(ApiError::BadRequest("unknown room"));
+    }
+    let text = req.text.trim();
+    if text.is_empty() || text.chars().count() > 2000 || text.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+        return Err(ApiError::BadRequest("message must be 1-2000 printable characters"));
+    }
+    Ok(Json(s.db.add_chat_message(&room, &m, text)?))
 }
 
 /// Runs `f` for every live room (kicks, role updates, deletion).

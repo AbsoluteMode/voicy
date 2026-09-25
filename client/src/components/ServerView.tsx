@@ -1,4 +1,4 @@
-import { ImagePlus, LogOut, Maximize2, Pencil, Search, Shield, ShieldOff, Trash2, Upload, UserMinus } from "lucide-react";
+import { ImagePlus, LogOut, Maximize2, MessageCircle, Pencil, Search, Shield, ShieldOff, Trash2, Upload, UserMinus } from "lucide-react";
 import { FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
 
 import { syncAvatar } from "../lib/avatar";
@@ -7,6 +7,7 @@ import { updateSettings, useSettings } from "../lib/settings";
 import { api, avatarUrl, errorCode, errorText, forgetServer, Member, Role, RoomInfo, SavedServer } from "../lib/tauri";
 import { EndReason, Peer, ScreenShare, useVoice, voice } from "../lib/voice";
 import { AvatarDialog, removeAvatar } from "./AvatarDialog";
+import { ChannelChat } from "./ChannelChat";
 import { DeleteDialog } from "./DeleteDialog";
 import {
   HangUpIcon,
@@ -253,6 +254,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
   const [menu, setMenu] = useState(false);
   const [error, setError] = useState("");
   const [shareBusy, setShareBusy] = useState(false);
+  const [chatRoom, setChatRoom] = useState<{ id: string; name: string } | null>(null);
 
   const handleError = useCallback((e: unknown) => {
     const code = errorCode(e);
@@ -521,15 +523,20 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
           const count = mine ? v.peers.length : r.participants.length;
           return (
             <div key={r.id} data-room={r.id} className={`room${mine ? " mine" : ""}${drag && drag.over === r.id && drag.from !== r.id ? " drop" : ""}`}>
-              <button
-                className="room-head"
-                onClick={() => !mine && join(r.id)}
-                disabled={mine || (here && v.state === "connecting")}
-                title={mine ? "Ты здесь" : `Зайти в «${r.name}»`}
-              >
-                <span className="sec-label">{r.name}</span>
-                <span className="room-count">{count === 0 ? "пусто · зайти" : mine ? `${count}` : `${count} · зайти`}</span>
-              </button>
+              <div className="room-top">
+                <button
+                  className="room-head"
+                  onClick={() => !mine && join(r.id)}
+                  disabled={mine || (here && v.state === "connecting")}
+                  title={mine ? "Ты здесь" : `Зайти в «${r.name}»`}
+                >
+                  <span className="sec-label">{r.name}</span>
+                  <span className="room-count">{count === 0 ? "пусто · зайти" : mine ? `${count}` : `${count} · зайти`}</span>
+                </button>
+                <button className="icon-btn sm room-chat-btn" onClick={() => setChatRoom({ id: r.id, name: r.name })} title={`Чат «${r.name}»`} aria-label={`Чат «${r.name}»`}>
+                  <MessageCircle size={17} />
+                </button>
+              </div>
               {mine
                 ? v.peers.map((p) => {
                     const m = byId.get(p.identity);
@@ -654,6 +661,9 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
             void loadMembers();
           }}
         />
+      )}
+      {chatRoom && (
+        <ChannelChat host={server.host} room={chatRoom.id} roomName={chatRoom.name} memberId={server.member_id} onClose={() => setChatRoom(null)} />
       )}
     </div>
   );

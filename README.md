@@ -30,6 +30,14 @@ gives sound only for a whole screen). The stream goes out at 1080p30 with 720p a
 viewer gets what fits their connection and the size of the stream on their screen, and unwatched layers are not
 encoded. Shared sound is stereo and leaves out everything voicy itself plays, so nobody hears the room echoed back.
 
+## Local server for testing
+
+On Windows, start Docker Desktop and choose **Add server → On this PC** in Voicy. The app starts a loopback-only LiveKit container and the bundled `voicy-server.exe`, then creates the owner account. This local server is reachable only from the same computer. Its data is kept in the app config directory and is reused on the next launch; joining a room starts the local services again when needed. The client installer builds and bundles the matching server executable.
+
+## Room chat
+
+Click the speech bubble next to a room to open its text chat. Members can send messages without joining voice. Messages are stored by the Voicy server in its SQLite database; remote servers need this server version for chat to work. Enter sends a message, and Shift+Enter adds a line break.
+
 ## Layout
 
 ```

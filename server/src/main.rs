@@ -50,13 +50,18 @@ impl Config {
     }
 
     pub fn livekit_url(&self) -> String {
-        format!("wss://{}", self.public_host)
+        if self.public_host == "127.0.0.1:8080" {
+            "ws://127.0.0.1:7880".into()
+        } else {
+            format!("wss://{}", self.public_host)
+        }
     }
 
     /// A plain https link, so it is clickable in any messenger. The page
     /// behind it opens the app or offers the download.
     pub fn invite_link(&self, code: &str) -> String {
-        format!("https://{}/join/{}", self.public_host, code)
+        let scheme = if self.public_host == "127.0.0.1:8080" { "http" } else { "https" };
+        format!("{scheme}://{}/join/{}", self.public_host, code)
     }
 }
 

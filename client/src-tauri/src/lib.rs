@@ -2,6 +2,7 @@ mod api;
 mod deploy;
 mod error;
 mod hotkeys;
+mod local_server;
 mod permissions;
 mod pinterest;
 mod store;
@@ -20,7 +21,7 @@ fn list_servers(app: AppHandle) -> CmdResult<Vec<SavedServer>> {
     Ok(store::load(&app)?)
 }
 
-/// Parses `https://<host>/join/<code>` or `voicy://join/<host>/<code>`.
+/// Parses HTTPS or voicy invites; local HTTP is allowed only on our loopback server.
 /// Surrounding text pasted from a chat is fine.
 fn parse_invite(link: &str) -> CmdResult<(String, String)> {
     let bad = || CmdError::new("invalid", "это не похоже на ссылку-приглашение Voicy");
@@ -28,7 +29,15 @@ fn parse_invite(link: &str) -> CmdResult<(String, String)> {
     let (host, code) = if let Some((_, rest)) = text.split_once("voicy://join/") {
         rest.split_once('/').ok_or_else(bad)?
     } else {
-        let rest = text.split_once("https://").ok_or_else(bad)?.1;
+        let rest = if let Some((_, rest)) = text.split_once("https://") {
+            rest
+        } else {
+            let rest = text.split_once("http://").ok_or_else(bad)?.1;
+            if !rest.starts_with("127.0.0.1:8080/") {
+                return Err(bad());
+            }
+            rest
+        };
         let (host, path) = rest.split_once('/').ok_or_else(bad)?;
         (host, path.strip_prefix("join/").ok_or_else(bad)?)
     };
@@ -53,7 +62,8 @@ fn invite_from_clipboard(app: AppHandle) -> Option<String> {
     if saved.iter().any(|s| s.host == host) {
         return None;
     }
-    Some(format!("https://{host}/join/{code}"))
+    let scheme = if host == local_server::HOST { "http" } else { "https" };
+    Some(format!("{scheme}://{host}/join/{code}"))
 }
 
 /// Public info about the server an invite points to.
@@ -149,6 +159,12 @@ fn forget_server(app: AppHandle, host: String) -> CmdResult<()> {
 /// Authenticated call to `https://<host>/api/...` on behalf of the saved member.
 #[tauri::command]
 async fn api_request(app: AppHandle, host: String, method: String, path: String, body: Option<Value>) -> CmdResult<Value> {
+    if host == local_server::HOST {
+        let app_for_start = app.clone();
+        tauri::async_runtime::spawn_blocking(move || local_server::ensure(&app_for_start, |_| {}))
+            .await
+            .map_err(|e| CmdError::new("other", e.to_string()))??;
+    }
     let token = store::token(&host)?.ok_or_else(|| CmdError::new("unauthorized", "нет сохранённого входа для этого сервера"))?;
     let method = Method::from_bytes(method.as_bytes()).map_err(|_| CmdError::new("invalid", "bad method"))?;
     let result = api::request(&host, Some(&token), method.clone(), &path, body).await?;
@@ -178,6 +194,27 @@ async fn api_request(app: AppHandle, host: String, method: String, path: String,
         }
     }
     Ok(result)
+}
+
+#[tauri::command]
+async fn create_local_server(app: AppHandle, server_name: String, nickname: String, on_log: Channel<String>) -> CmdResult<SavedServer> {
+    let nickname = nickname.trim().to_owned();
+    if nickname.is_empty() || nickname.chars().count() > 32 {
+        return Err(CmdError::new("invalid", "ник должен содержать от 1 до 32 символов"));
+    }
+    local_server::prepare(&app, &server_name)?;
+    let app_for_start = app.clone();
+    let config = tauri::async_runtime::spawn_blocking(move || {
+        local_server::ensure(&app_for_start, |line| { let _ = on_log.send(line.to_owned()); })
+    })
+    .await
+    .map_err(|e| CmdError::new("other", e.to_string()))??;
+    if let Some(saved) = store::load(&app)?.into_iter().find(|s| s.host == local_server::HOST) {
+        if store::token(local_server::HOST)?.is_some() {
+            return Ok(saved);
+        }
+    }
+    redeem(&app, local_server::HOST, &config.code, &nickname).await
 }
 
 #[derive(Deserialize)]
@@ -297,6 +334,11 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_window_event(|_, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                local_server::stop();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             list_servers,
             join_server,
@@ -311,6 +353,7 @@ pub fn run() {
             set_hotkeys,
             pinterest_search,
             pinterest_image,
+            create_local_server,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -330,6 +373,8 @@ mod tests {
         assert!(parse_invite(&format!("<voicy://join/host.example/{CODE}/>")).is_ok());
         assert!(parse_invite("https://evil/join").is_err());
         assert!(parse_invite(&format!("https://host.example/other/{CODE}")).is_err());
+        assert!(parse_invite(&format!("http://127.0.0.1:8080/join/{CODE}")).is_ok());
+        assert!(parse_invite(&format!("http://host.example/join/{CODE}")).is_err());
         assert!(parse_invite("voicy://join/host.example/short").is_err());
         assert!(parse_invite(&format!("voicy://join/host:99999/{CODE}")).is_err());
         assert!(parse_invite(&format!("voicy://join/ho st/{CODE}")).is_err());

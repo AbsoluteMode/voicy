@@ -82,6 +82,16 @@ pub struct Invite {
     pub expires_at: Option<i64>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct ChatMessage {
+    pub id: i64,
+    pub room: String,
+    pub member_id: String,
+    pub nickname: String,
+    pub text: String,
+    pub created_at: i64,
+}
+
 pub enum Redeem {
     Ok(Member),
     InvalidCode,
@@ -120,6 +130,15 @@ CREATE TABLE IF NOT EXISTS avatars (
     mime      TEXT NOT NULL,
     data      BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    room       TEXT NOT NULL,
+    member_id  TEXT NOT NULL,
+    nickname   TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chat_messages_room_id ON chat_messages(room, id);
 ";
 
 /// `created_by` of an owner invite made by a redeploy while an owner exists.
@@ -134,6 +153,42 @@ impl Db {
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn chat_messages(&self, room: &str, after: i64) -> Result<Vec<ChatMessage>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, room, member_id, nickname, text, created_at FROM
+             (SELECT id, room, member_id, nickname, text, created_at FROM chat_messages
+              WHERE room = ?1 AND id > ?2 ORDER BY id DESC LIMIT 100)
+             ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(params![room, after], |r| {
+            Ok(ChatMessage {
+                id: r.get(0)?, room: r.get(1)?, member_id: r.get(2)?,
+                nickname: r.get(3)?, text: r.get(4)?, created_at: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn add_chat_message(&self, room: &str, member: &Member, text: &str) -> Result<ChatMessage> {
+        let conn = self.conn();
+        let created_at = now();
+        conn.execute(
+            "INSERT INTO chat_messages (room, member_id, nickname, text, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![room, member.id, member.nickname, text, created_at],
+        )?;
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "DELETE FROM chat_messages WHERE room = ?1 AND id <=
+             COALESCE((SELECT id FROM chat_messages WHERE room = ?1 ORDER BY id DESC LIMIT 1 OFFSET 999), 0) - 1",
+            [room],
+        )?;
+        Ok(ChatMessage {
+            id, room: room.to_owned(), member_id: member.id.clone(),
+            nickname: member.nickname.clone(), text: text.to_owned(), created_at,
+        })
     }
 
     /// Name set in the app; the install-time name applies until then.
@@ -326,7 +381,8 @@ impl Db {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute_batch(
-            "DELETE FROM avatars;
+            "DELETE FROM chat_messages;
+             DELETE FROM avatars;
              DELETE FROM members;
              DELETE FROM invites;
              INSERT OR REPLACE INTO meta (key, value) VALUES ('deleted', '1');",
@@ -408,5 +464,20 @@ mod tests {
         assert_eq!(db.avatar(&m.id).unwrap().unwrap().mime, "image/png");
         db.delete_member(&m.id).unwrap();
         assert!(db.avatar(&m.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn chat_is_ordered_and_separate_for_each_room() {
+        let db = db();
+        db.ensure_owner_invite("code", 0).unwrap();
+        let Redeem::Ok(member) = db.redeem_invite("code", "izzy", "secret", 1).unwrap() else { panic!() };
+        let first = db.add_chat_message("r1", &member, "hello").unwrap();
+        db.add_chat_message("r2", &member, "elsewhere").unwrap();
+        let second = db.add_chat_message("r1", &member, "again").unwrap();
+        assert_eq!(db.chat_messages("r1", 0).unwrap().iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["hello", "again"]);
+        assert_eq!(db.chat_messages("r1", first.id).unwrap()[0].id, second.id);
+        assert_eq!(db.chat_messages("r2", 0).unwrap()[0].text, "elsewhere");
+        db.wipe().unwrap();
+        assert!(db.chat_messages("r1", 0).unwrap().is_empty());
     }
 }

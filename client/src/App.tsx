@@ -1,10 +1,11 @@
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { AlertCircle, Check, ChevronRight, Link2, Plus, RefreshCw, Server } from "lucide-react";
+import { AlertCircle, Check, ChevronRight, Laptop, Link2, Plus, RefreshCw, Server } from "lucide-react";
 import { MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { CreateDialog } from "./components/CreateDialog";
 import { JoinDialog } from "./components/JoinDialog";
 import { DownloadIcon, Logo, PlusIcon } from "./components/icons";
+import { LocalCreateDialog } from "./components/LocalCreateDialog";
 import { ServerView } from "./components/ServerView";
 import { ConfirmHost, initials, Modal } from "./components/ui";
 import { applyHotkeys } from "./lib/hotkeys";
@@ -13,10 +14,10 @@ import { api, errorText, inviteFromClipboard, joinServer, listServers, RoomInfo,
 import { checkForUpdate, confirmAndInstall, useUpdater } from "./lib/updater";
 import { useVoice, voice } from "./lib/voice";
 
-type Dialog = { kind: "choose" } | { kind: "join"; link?: string; error?: string } | { kind: "create" } | null;
+type Dialog = { kind: "choose" } | { kind: "join"; link?: string; error?: string } | { kind: "create" } | { kind: "local" } | null;
 
 /** First screen. Almost everyone arrives with an invite, so that comes first. */
-function Welcome({ onInvite, onCreate }: { onInvite: (link: string) => void; onCreate: () => void }) {
+function Welcome({ onInvite, onCreate, onLocal }: { onInvite: (link: string) => void; onCreate: () => void; onLocal: () => void }) {
   const [link, setLink] = useState("");
   return (
     <div className="welcome">
@@ -37,6 +38,10 @@ function Welcome({ onInvite, onCreate }: { onInvite: (link: string) => void; onC
         <p style={{ marginTop: 24, fontSize: 13 }}>
           Хочешь свой сервер?{" "}
           <button className="linklike" onClick={onCreate}>Создать на своём VPS</button>
+        </p>
+        <p style={{ marginTop: 8, fontSize: 13 }}>
+          Хочешь проверить на этом ПК?{" "}
+          <button className="linklike" onClick={onLocal}>Создать локальный сервер</button>
         </p>
       </div>
     </div>
@@ -220,7 +225,7 @@ export default function App() {
         {current ? (
           <ServerView key={current.host} server={current} onChanged={reload} onRemoved={reload} />
         ) : (
-          <Welcome onInvite={(link) => setDialog({ kind: "join", link })} onCreate={() => setDialog({ kind: "create" })} />
+          <Welcome onInvite={(link) => setDialog({ kind: "join", link })} onCreate={() => setDialog({ kind: "create" })} onLocal={() => setDialog({ kind: "local" })} />
         )}
       </main>
 
@@ -243,6 +248,14 @@ export default function App() {
               </span>
               <ChevronRight size={18} className="choice-go" />
             </button>
+            <button className="choice" onClick={() => setDialog({ kind: "local" })}>
+              <span className="choice-icon"><Laptop size={20} /></span>
+              <span className="choice-text">
+                <b>На этом ПК</b>
+                <small>Для проверки нужен Docker Desktop</small>
+              </span>
+              <ChevronRight size={18} className="choice-go" />
+            </button>
           </div>
         </Modal>
       )}
@@ -256,6 +269,7 @@ export default function App() {
         />
       )}
       {dialog?.kind === "create" && <CreateDialog onClose={() => setDialog(null)} onCreated={(s) => added(s, false)} />}
+      {dialog?.kind === "local" && <LocalCreateDialog onClose={() => setDialog(null)} onCreated={(s) => added(s, false)} />}
       <ConfirmHost />
     </div>
   );
