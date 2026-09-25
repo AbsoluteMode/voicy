@@ -6,13 +6,28 @@ import { ChatMessages } from "./ChannelChat";
 
 export type DirectPeer = Pick<Member, "id" | "nickname">;
 
-export function ServerChatPanel({ host, memberId, members, peer, tab, onTab, onPeer, onClose }: {
+export function ServerChatPanel({ host, memberId, onClose }: {
+  host: string;
+  memberId: string;
+  onClose: () => void;
+}) {
+  return (
+    <aside className="server-chat" aria-label="Общий чат сервера">
+      <div className="server-chat-head">
+        <span className="chat-mark"><MessageCircle size={18} /></span>
+        <span className="chat-heading"><strong>Общий чат</strong><small>Для всех участников сервера</small></span>
+        <button className="icon-btn sm" onClick={onClose} title="Закрыть чат" aria-label="Закрыть чат"><X size={17} /></button>
+      </div>
+      <ChatMessages host={host} path="/api/messages" memberId={memberId} label="Сообщения общего чата" compact />
+    </aside>
+  );
+}
+
+export function DirectMessagesPanel({ host, memberId, members, peer, onPeer, onClose }: {
   host: string;
   memberId: string;
   members: Member[];
   peer: DirectPeer | null;
-  tab: "general" | "direct";
-  onTab: (tab: "general" | "direct") => void;
   onPeer: (peer: DirectPeer | null) => void;
   onClose: () => void;
 }) {
@@ -50,22 +65,16 @@ export function ServerChatPanel({ host, memberId, members, peer, tab, onTab, onP
   }, [members, memberId, threads, search]);
 
   return (
-    <aside className="server-chat" aria-label="Чат сервера">
+    <aside className="server-chat" aria-label="Личные сообщения">
       <div className="server-chat-head">
-        <span className="chat-mark"><MessageCircle size={18} /></span>
+        <span className="chat-mark"><Send size={18} /></span>
         <span className="chat-heading">
-          <strong>{peer && tab === "direct" ? peer.nickname : tab === "direct" ? "Личные сообщения" : "Общий чат"}</strong>
-          <small>{peer && tab === "direct" ? "Личная переписка" : tab === "direct" ? "Диалоги с участниками" : "Для всех участников сервера"}</small>
+          <strong>{peer ? peer.nickname : "Личные сообщения"}</strong>
+          <small>{peer ? "Личная переписка" : "Диалоги с участниками"}</small>
         </span>
-        <button className="icon-btn sm" onClick={onClose} title="Закрыть чат" aria-label="Закрыть чат"><X size={17} /></button>
+        <button className="icon-btn sm" onClick={onClose} title="Закрыть личные сообщения" aria-label="Закрыть личные сообщения"><X size={17} /></button>
       </div>
-      <div className="chat-tabs" role="tablist" aria-label="Разделы чата">
-        <button className={tab === "general" ? "active" : ""} onClick={() => onTab("general")} role="tab" aria-selected={tab === "general"}>Общий</button>
-        <button className={tab === "direct" ? "active" : ""} onClick={() => onTab("direct")} role="tab" aria-selected={tab === "direct"}>Личные</button>
-      </div>
-      {tab === "general" ? (
-        <ChatMessages key="general" host={host} path="/api/messages" memberId={memberId} label="Сообщения общего чата" compact />
-      ) : peer ? (
+      {peer ? (
         <>
           <button className="chat-back" onClick={() => onPeer(null)}><ArrowLeft size={16} /> Все переписки</button>
           <ChatMessages key={peer.id} host={host} path={`/api/dms/${peer.id}`} memberId={memberId} label={`Личные сообщения с ${peer.nickname}`} compact />

@@ -1,5 +1,6 @@
 import { ImagePlus, LogOut, Maximize2, MessageCircle, MonitorPlay, Pencil, Search, Send, Shield, ShieldOff, Trash2, Upload, UserMinus, X } from "lucide-react";
-import { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
+import { CSSProperties, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
+import { createPortal } from "react-dom";
 
 import { syncAvatar } from "../lib/avatar";
 import { ask } from "../lib/confirm";
@@ -8,7 +9,7 @@ import { api, avatarUrl, errorCode, errorText, forgetServer, Member, Role, RoomI
 import { EndReason, Peer, ScreenShare, useVoice, voice } from "../lib/voice";
 import { AvatarDialog, removeAvatar } from "./AvatarDialog";
 import { ChannelChat } from "./ChannelChat";
-import { DirectPeer, ServerChatPanel } from "./ServerChatPanel";
+import { DirectMessagesPanel, DirectPeer, ServerChatPanel } from "./ServerChatPanel";
 import { DeleteDialog } from "./DeleteDialog";
 import {
   HangUpIcon,
@@ -169,6 +170,29 @@ function MeMenu({ onClose, onFile, onPinterest }: { onClose: () => void; onFile:
   );
 }
 
+function MemberMenu({ anchor, onClose, onMessage }: { anchor: HTMLElement; onClose: () => void; onMessage: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const away = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && !anchor.contains(e.target as Node) && onClose();
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("mousedown", away);
+    window.addEventListener("keydown", esc);
+    window.addEventListener("scroll", onClose, true);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      window.removeEventListener("keydown", esc);
+      window.removeEventListener("scroll", onClose, true);
+    };
+  }, [anchor, onClose]);
+  const rect = anchor.getBoundingClientRect();
+  return createPortal(
+    <div className="menu-pop member-pop" ref={ref} style={{ left: Math.max(8, Math.min(rect.left + 44, window.innerWidth - 278)), top: Math.max(8, Math.min(rect.bottom - 3, window.innerHeight - 56)) }} onClick={(e) => e.stopPropagation()}>
+      <button onClick={onMessage}><Send size={16} /> Написать в личные сообщения</button>
+    </div>,
+    document.body,
+  );
+}
+
 /**
  * One person in the call. Volume lives under the mouse wheel (right click
  * resets it) and is only shown when it is not 100% or while changing it.
@@ -178,7 +202,7 @@ function PeerRow(props: {
   peer: Peer;
   avatar: string | null;
   actions?: ReactNode;
-  onClick?: () => void;
+  onClick?: (event: ReactMouseEvent<HTMLDivElement>) => void;
   onGrab?: (e: ReactPointerEvent) => void;
   children?: ReactNode;
 }) {
@@ -206,8 +230,8 @@ function PeerRow(props: {
   return (
     <div
       ref={level}
-      className={`prow${props.onClick ? " self" : ""}${props.onGrab ? " grab" : ""}`}
-      onClick={props.onClick}
+      className={`prow${peer.isLocal ? " self" : ""}${props.onGrab ? " grab" : ""}`}
+      onClick={(e) => { if (!(e.target as HTMLElement).closest("button, .menu-pop")) props.onClick?.(e); }}
       onPointerDown={props.onGrab}
       onWheel={onWheel}
       onContextMenu={(e) => {
@@ -215,7 +239,7 @@ function PeerRow(props: {
         e.preventDefault();
         setVolume(1);
       }}
-      title={peer.isLocal ? (props.onClick ? "Нажми, чтобы сменить аватар" : undefined) : `Громкость ${Math.round(volume * 100)}% · колесо мыши — изменить, правый клик — сбросить`}
+      title={peer.isLocal && props.onClick ? "Нажми, чтобы сменить аватар" : undefined}
     >
       <Avatar className={`av${peer.speaking ? " speaking" : ""}`} id={peer.identity} name={peer.name} src={props.avatar} />
       <div className="who">
@@ -259,21 +283,25 @@ export function ServerView({ server, inboxRequest, onChanged, onRemoved }: { ser
   const [error, setError] = useState("");
   const [shareBusy, setShareBusy] = useState(false);
   const [chatRoom, setChatRoom] = useState<{ id: string; name: string } | null>(null);
+  const [memberMenu, setMemberMenu] = useState<(DirectPeer & { anchor: HTMLElement }) | null>(null);
+  const closeMemberMenu = useCallback(() => setMemberMenu(null), []);
   const [directPeer, setDirectPeer] = useState<DirectPeer | null>(null);
-  const [chatTab, setChatTab] = useState<"general" | "direct">("general");
+  const [chatView, setChatView] = useState<"server" | "inbox">("server");
   const [chatOpen, setChatOpen] = useState(() => localStorage.getItem("voicy.chat.open") !== "false");
   const [chatWidth, setChatWidth] = useState(() => {
     const stored = Number(localStorage.getItem("voicy.chat.width.v2"));
     return Number.isFinite(stored) && stored >= 240 && stored <= 700 ? stored : 400;
   });
   const contentRef = useRef<HTMLDivElement>(null);
+  const lastInboxRequest = useRef(inboxRequest);
 
   useEffect(() => { localStorage.setItem("voicy.chat.open", String(chatOpen)); }, [chatOpen]);
   useEffect(() => { localStorage.setItem("voicy.chat.width.v2", String(chatWidth)); }, [chatWidth]);
   useEffect(() => {
-    if (inboxRequest === 0) return;
+    if (inboxRequest === lastInboxRequest.current) return;
+    lastInboxRequest.current = inboxRequest;
     setDirectPeer(null);
-    setChatTab("direct");
+    setChatView("inbox");
     setChatOpen(true);
   }, [inboxRequest]);
 
@@ -285,8 +313,13 @@ export function ServerView({ server, inboxRequest, onChanged, onRemoved }: { ser
 
   function openDirect(id: string, nickname: string) {
     setDirectPeer({ id, nickname });
-    setChatTab("direct");
+    setMemberMenu(null);
+    setChatView("inbox");
     setChatOpen(true);
+  }
+
+  function toggleMemberMenu(id: string, nickname: string, anchor: HTMLElement) {
+    setMemberMenu((current) => current?.id === id ? null : { id, nickname, anchor });
   }
 
   const handleError = useCallback((e: unknown) => {
@@ -507,7 +540,7 @@ export function ServerView({ server, inboxRequest, onChanged, onRemoved }: { ser
     <div className="server">
       <header className="server-head">
         <h1>{name}</h1>
-        <button className={`btn pill chat-toggle${chatOpen ? " active" : ""}`} onClick={() => setChatOpen((open) => !open)} aria-label={chatOpen ? "Закрыть чат" : "Открыть чат"} title={chatOpen ? "Закрыть чат" : "Открыть чат"}>
+        <button className={`btn pill chat-toggle${chatOpen && chatView === "server" ? " active" : ""}`} onClick={() => { if (chatOpen && chatView === "server") setChatOpen(false); else { setChatView("server"); setChatOpen(true); } }} aria-label={chatOpen && chatView === "server" ? "Закрыть общий чат" : "Открыть общий чат"} title={chatOpen && chatView === "server" ? "Закрыть общий чат" : "Открыть общий чат"}>
           <MessageCircle size={16} /> Чат
         </button>
         {RANK[role] >= RANK.admin && (
@@ -591,27 +624,26 @@ export function ServerView({ server, inboxRequest, onChanged, onRemoved }: { ser
                         key={p.identity}
                         peer={{ ...p, role: m?.role ?? p.role }}
                         avatar={avatarFor(p.identity)}
-                        actions={!p.isLocal ? <>
-                          <button className="icon-btn sm dm-btn" onClick={(e) => { e.stopPropagation(); openDirect(p.identity, p.name); }} title={`Написать ${p.name}`} aria-label={`Написать ${p.name}`}><Send size={15} /></button>
-                          {m && canManage(m) && memberActions(m)}
-                        </> : undefined}
-                        onClick={p.isLocal ? () => setMeMenu(!meMenu) : undefined}
+                        actions={!p.isLocal && m && canManage(m) ? memberActions(m) : undefined}
+                        onClick={p.isLocal ? () => setMeMenu(!meMenu) : (e) => toggleMemberMenu(p.identity, p.name, e.currentTarget)}
                         onGrab={canMove || p.isLocal ? (e) => grab(e, { id: p.identity, name: p.name, from: r.id }) : undefined}
                       >
                         {p.isLocal && meMenu && meMenuPop()}
+                        {!p.isLocal && memberMenu?.id === p.identity && <MemberMenu anchor={memberMenu.anchor} onClose={closeMemberMenu} onMessage={() => openDirect(p.identity, p.name)} />}
                       </PeerRow>
                     );
                   })
                 : r.participants.map((p) => (
                     <div
-                      className={`mrow${canMove || p.id === server.member_id ? " grab" : ""}`}
+                      className={`mrow${canMove || p.id === server.member_id ? " grab" : ""}${p.id !== server.member_id ? " member-target" : ""}`}
                       key={p.id}
                       onPointerDown={canMove || p.id === server.member_id ? (e) => grab(e, { id: p.id, name: p.name, from: r.id }) : undefined}
+                      onClick={(e) => { if (p.id !== server.member_id && !(e.target as HTMLElement).closest("button, .menu-pop")) toggleMemberMenu(p.id, p.name, e.currentTarget); }}
                     >
                       <Avatar className="av sm" id={p.id} name={p.name} src={avatarFor(p.id)} />
                       <div className="name">{p.name}</div>
-                      {p.id !== server.member_id && <button className="icon-btn sm dm-btn" onClick={() => openDirect(p.id, p.name)} title={`Написать ${p.name}`} aria-label={`Написать ${p.name}`}><Send size={15} /></button>}
                       <RoleBadge role={byId.get(p.id)?.role} />
+                      {p.id !== server.member_id && memberMenu?.id === p.id && <MemberMenu anchor={memberMenu.anchor} onClose={closeMemberMenu} onMessage={() => openDirect(p.id, p.name)} />}
                     </div>
                   ))}
             </div>
@@ -625,9 +657,9 @@ export function ServerView({ server, inboxRequest, onChanged, onRemoved }: { ser
               const self = m.id === server.member_id;
               return (
               <div
-                className={`mrow${self ? " self" : ""}`}
+                className={`mrow${self ? " self" : " member-target"}`}
                 key={m.id}
-                onClick={self ? () => setMeMenu(!meMenu) : undefined}
+                onClick={(e) => { if ((e.target as HTMLElement).closest("button, .menu-pop")) return; if (self) setMeMenu(!meMenu); else toggleMemberMenu(m.id, m.nickname, e.currentTarget); }}
                 title={self ? "Нажми, чтобы сменить аватар" : undefined}
               >
                 <Avatar className="av off" id={m.id} name={m.nickname} src={avatarFor(m.id)} plain />
@@ -635,10 +667,10 @@ export function ServerView({ server, inboxRequest, onChanged, onRemoved }: { ser
                   {m.nickname}
                   {m.id === server.member_id && <span style={{ color: "var(--faint)" }}> · ты</span>}
                 </div>
-                {!self && <button className="icon-btn sm dm-btn" onClick={(e) => { e.stopPropagation(); openDirect(m.id, m.nickname); }} title={`Написать ${m.nickname}`} aria-label={`Написать ${m.nickname}`}><Send size={15} /></button>}
                 {canManage(m) && memberActions(m)}
                 <RoleBadge role={m.role} />
                 {self && meMenu && meMenuPop()}
+                {!self && memberMenu?.id === m.id && <MemberMenu anchor={memberMenu.anchor} onClose={closeMemberMenu} onMessage={() => openDirect(m.id, m.nickname)} />}
               </div>
               );
             })}
@@ -650,7 +682,9 @@ export function ServerView({ server, inboxRequest, onChanged, onRemoved }: { ser
           onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); }}
           onPointerMove={(e) => { if (e.currentTarget.hasPointerCapture(e.pointerId)) resizeChat(e); }}
           onKeyDown={(e) => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); setChatWidth((width) => Math.max(240, Math.min(700, width + (e.key === "ArrowLeft" ? 20 : -20)))); } }} />
-        <ServerChatPanel host={server.host} memberId={server.member_id} members={members} peer={directPeer} tab={chatTab} onTab={setChatTab} onPeer={setDirectPeer} onClose={() => setChatOpen(false)} />
+        {chatView === "server"
+          ? <ServerChatPanel host={server.host} memberId={server.member_id} onClose={() => setChatOpen(false)} />
+          : <DirectMessagesPanel host={server.host} memberId={server.member_id} members={members} peer={directPeer} onPeer={setDirectPeer} onClose={() => setChatOpen(false)} />}
       </>}
       </div>
 
