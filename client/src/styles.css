@@ -58,6 +58,8 @@ button { font: inherit; color: inherit; }
   position: absolute; right: -3px; bottom: -3px; width: 10px; height: 10px; border-radius: 50%;
   background: var(--accent); border: 3px solid var(--bg);
 }
+.rail-btn.inbox { margin: 2px 0 9px; background: color-mix(in oklch, var(--accent) 13%, var(--surface)); color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent) 25%, var(--line)); }
+.rail-btn.inbox:hover { background: color-mix(in oklch, var(--accent) 23%, var(--surface)); color: var(--accent); }
 .rail-btn.add { background: transparent; border: 1px dashed #2e2e34; color: var(--faint); margin-top: 2px; }
 .rail-btn.add:hover { border-color: var(--faint); color: var(--text); background: transparent; }
 .rail-spacer { flex: 1; }
@@ -526,3 +528,40 @@ select option { background: var(--panel-2); color: var(--text); }
 .rail-btn.check.error { color: var(--warn); }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ─── Chat surface ────────────────────────────────────────── */
+.server-chat {
+  padding: 18px 18px 14px;
+  background: color-mix(in oklch, var(--surface) 88%, var(--panel));
+}
+.server-chat-head { gap: 11px; padding: 0 0 18px; }
+.chat-mark { width: 38px; height: 38px; flex: none; display: grid; place-items: center; border-radius: 13px; background: color-mix(in oklch, var(--accent) 13%, var(--panel)); color: var(--accent); }
+.chat-heading { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
+.chat-heading strong { font-family: var(--display); font-size: 17px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-heading small { color: var(--faint); font-size: 11.5px; }
+.server-chat-head .icon-btn { flex: none; }
+.chat-tabs { gap: 5px; padding: 4px; margin-bottom: 12px; border: 1px solid var(--line-soft); border-radius: 12px; }
+.chat-tabs button { border-radius: 9px; padding: 9px 4px; font-weight: 600; }
+.chat-tabs button.active { box-shadow: inset 0 1px rgba(255, 255, 255, .04); }
+.chat-contact { gap: 11px; padding: 11px; margin-bottom: 6px; border: 1px solid var(--line-soft); border-radius: 12px; background: var(--panel); }
+.server-chat .chat-list { padding: 8px 2px 14px; background: transparent; border: 0; border-radius: 0; }
+.server-chat .chat-compose { margin-top: 8px; padding: 6px; gap: 5px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); transition: border-color .15s; }
+.server-chat .chat-compose:focus-within { border-color: color-mix(in oklch, var(--accent) 65%, var(--line)); }
+.server-chat .chat-compose textarea { resize: none; min-height: 50px; padding: 12px 10px; background: transparent; border: 0; }
+.server-chat .chat-compose button { width: 48px; border-radius: 10px; background: var(--accent); color: var(--accent-ink); }
+.server-chat .chat-compose button:hover:not(:disabled) { background: color-mix(in oklch, var(--accent) 88%, white); }
+.server-chat .chat-message { padding: 10px 12px; }
+.server-chat .chat-empty { margin: auto; padding: 20px 10px; }
+.chat-notice { color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 10px 12px; line-height: 1.4; font-size: 12px; }
+.chat-list { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.chat-empty { color: var(--faint); text-align: center; margin: auto; padding: 54px 8px; font-size: 13px; display: flex; align-items: center; flex-direction: column; gap: 8px; }
+.chat-empty-icon { width: 54px; height: 54px; margin-bottom: 5px; border-radius: 18px; display: grid; place-items: center; background: color-mix(in oklch, var(--accent) 12%, var(--panel)); color: var(--accent); }
+.chat-empty strong { color: var(--text); font-size: 14px; }
+.chat-message { width: fit-content; max-width: 92%; min-width: 110px; border: 1px solid var(--line); background: var(--panel); border-radius: 12px; }
+.chat-message.mine { margin-left: auto; border-color: color-mix(in oklch, var(--accent) 24%, var(--line)); background: color-mix(in oklch, var(--accent) 10%, var(--panel)); }
+.dm-btn { opacity: 0; }
+.prow:hover .dm-btn, .mrow:hover .dm-btn, .dm-btn:focus-visible { opacity: 1; }
+@media (max-width: 660px) {
+  .server-content { grid-template-rows: minmax(120px, 34%) minmax(280px, 1fr); }
+  .server-content.chat-closed { grid-template-rows: minmax(0, 1fr); }
+}

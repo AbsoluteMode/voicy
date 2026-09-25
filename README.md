@@ -36,7 +36,7 @@ On Windows, start Docker Desktop and choose **Add server → On this PC** in Voi
 
 ## Room chat
 
-The server-wide chat sits beside the room list. Its header button opens or closes the panel, and the divider can be dragged to resize it. The speech bubble next to a room still opens that room's separate chat. Use the message button next to a member to start a private conversation, or find existing conversations under **Direct** in the panel. Only the two participants can read a private conversation. Members can send messages without joining voice. Messages are stored by the Voicy server in its SQLite database; remote servers need this server version for chat to work. Enter sends a message, and Shift+Enter adds a line break.
+The server-wide chat sits beside the room list. Its header button opens or closes the panel, and the divider can be dragged to resize it. The paper-plane button in the left rail opens direct messages; the same icon appears on a member's row when hovered. The speech bubble next to a room still opens that room's separate chat. Only the two participants can read a private conversation. Members can send messages without joining voice. Messages are stored by the Voicy server in its SQLite database; remote servers need this server version for chat to work. Enter sends a message, and Shift+Enter adds a line break.
 
 Shared screens in your voice room appear as cards. Choose **Watch** to subscribe to a screen and its audio, then **Leave viewing** to unsubscribe without leaving the voice room.
 

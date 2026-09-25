@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "Voicy",
-        "width": 440,
-        "height": 600,
+        "width": 960,
+        "height": 680,
         "minWidth": 360,
         "minHeight": 460
       }

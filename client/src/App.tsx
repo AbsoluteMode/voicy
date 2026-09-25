@@ -1,5 +1,5 @@
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { AlertCircle, Check, ChevronRight, Laptop, Link2, Plus, RefreshCw, Server } from "lucide-react";
+import { AlertCircle, Check, ChevronRight, Laptop, Link2, Plus, RefreshCw, Send, Server } from "lucide-react";
 import { MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { CreateDialog } from "./components/CreateDialog";
@@ -68,6 +68,7 @@ export default function App() {
   const [servers, setServers] = useState<SavedServer[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
+  const [inboxRequest, setInboxRequest] = useState(0);
   const v = useVoice();
 
   const reload = useCallback(async () => {
@@ -170,6 +171,7 @@ export default function App() {
     <div className="app">
       <nav className="rail" aria-label="Серверы">
         <div className="rail-logo" title="Voicy"><Logo size={30} /></div>
+        {current && <button className="rail-btn inbox" title="Личные сообщения" aria-label="Личные сообщения" onClick={() => setInboxRequest((count) => count + 1)}><Send size={19} /></button>}
         {servers.map((s) => (
           <button
             key={s.host}
@@ -223,7 +225,7 @@ export default function App() {
 
       <main className="main" {...spot}>
         {current ? (
-          <ServerView key={current.host} server={current} onChanged={reload} onRemoved={reload} />
+          <ServerView key={current.host} server={current} inboxRequest={inboxRequest} onChanged={reload} onRemoved={reload} />
         ) : (
           <Welcome onInvite={(link) => setDialog({ kind: "join", link })} onCreate={() => setDialog({ kind: "create" })} onLocal={() => setDialog({ kind: "local" })} />
         )}

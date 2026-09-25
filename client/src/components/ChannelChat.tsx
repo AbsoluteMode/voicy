@@ -70,7 +70,7 @@ export function ChatMessages({ host, path, memberId, label, compact = false }: {
   return (
     <div className="chat-body">
       <div className="chat-list" ref={list} role="log" aria-label={label}>
-        {messages.length === 0 && !error && <div className="chat-empty">Пока сообщений нет. Напиши первым.</div>}
+        {messages.length === 0 && !error && <div className="chat-empty"><span className="chat-empty-icon"><MessageCircle size={24} /></span><strong>Пока здесь тихо</strong><span>Напиши первым.</span></div>}
         {messages.map((message) => (
           <div className={`chat-message${message.member_id === memberId ? " mine" : ""}`} key={message.id}>
             <div className="chat-meta">
@@ -83,7 +83,7 @@ export function ChatMessages({ host, path, memberId, label, compact = false }: {
           </div>
         ))}
       </div>
-      {error && <div className="error">{error}</div>}
+      {error && <div className={error.includes("после обновления сервера") ? "chat-notice" : "error"}>{error}</div>}
       <form className="chat-compose" onSubmit={(event) => void send(event)}>
         <textarea
           value={draft}
