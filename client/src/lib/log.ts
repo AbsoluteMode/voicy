@@ -39,7 +39,7 @@ export async function flushLogs() {
   sending = true;
   const batch = buffer.splice(0, BATCH);
   try {
-    await api(host, "POST", "/api/logs", { version, entries: batch });
+    await api(host, "POST", "/api/logs", { version, sent_at: Date.now(), entries: batch });
   } catch {
     // Best effort: an older server has no /api/logs, and a lost batch is
     // better than a buffer that never drains.

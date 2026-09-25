@@ -19,9 +19,24 @@ Open-source voice chat for friends. Lightweight, self-hosted, focused on sound q
 ## Audio
 
 Opus at 48 kHz fullband and 128 kbit/s, packet-loss protection (RED + in-band FEC), no DTX, and the server
-forwards packets untouched (SFU, no mixing or transcoding). Noise suppression, echo cancellation and AGC are
-off by default, because they are built for laptop speakers and hurt the sound on headphones. Each one can be
-turned on.
+forwards packets untouched (SFU, no mixing or transcoding). Before encoding, the mic goes through an automatic
+level that brings every voice to the same loudness (slow, and only while someone talks, so pauses do not pump),
+then DeepFilterNet, which gently turns the background down, and a gate that silences the pauses. A USB mic that
+drops off for a moment is picked up again by itself.
+
+## Diagnostics
+
+Every app sends what happens to its mic and connection to the server it talks on, into `logs/<member id>.log`
+next to the database: mic and device events, and every 10 seconds an `audio` event with how the voice leaves
+(speech level, noise floor, automatic gain, clipping, gate, bitrate, loss, UDP or TCP) and how everyone else
+arrives (loss, repaired audio, jitter buffer, loudness). The server adds its own CPU, network and dropped UDP
+packets once a minute to `logs/_host.log`. To read all of it on one clock:
+
+```bash
+docker compose exec voicy voicy-server timeline 30 nick
+```
+
+The last 30 minutes, only members whose nickname contains `nick` (both optional), times in UTC.
 
 ## Screen sharing
 

@@ -2,7 +2,7 @@
 // so cleaning happens here, before encoding:
 //
 //   mic → getUserMedia (Chromium AEC if enabled; its NS and AGC stay off)
-//       → mono → [DeepFilterNet3 | RNNoise] → gate, in a 48 kHz AudioContext → Opus
+//       → mono → level → [DeepFilterNet3 | RNNoise] → gate, in a 48 kHz AudioContext → Opus
 //
 // Strong mask-based suppression makes the voice itself waver, so
 // DeepFilterNet only turns the background down gently while speaking, and
@@ -27,7 +27,7 @@ export const NOISE_MODES: { mode: NoiseMode; label: string; desc: string }[] = [
   {
     mode: "soft",
     label: "Мягкое",
-    desc: "Голос не обрабатывается совсем. В паузах между словами микрофон закрывается: фон и щелчки клавиатуры не слышны.",
+    desc: "Голос не очищается, только выравнивается по громкости. В паузах между словами микрофон закрывается: фон и щелчки клавиатуры не слышны.",
   },
   {
     mode: "standard",
@@ -53,6 +53,8 @@ const DFN_ATTENUATION_DB = { standard: 18, max: 100 } as const;
  * click does not; the D-block delay (21 ms) lets it open before the first
  * syllable instead of clipping it. Holds for H blocks (0.2 s) between
  * words, then fades the pause down by 30 dB. The floor adapts to the room.
+ * For a voice that is close to the floor, the threshold comes down towards
+ * it, so quiet syllables are not swallowed. Reports how often it is open.
  */
 const GATE_WORKLET = `
 class VoicyGate extends AudioWorkletProcessor {
@@ -68,6 +70,9 @@ class VoicyGate extends AudioWorkletProcessor {
     // cannot drag the floor up, and a louder room is learned in 1.5 s.
     this.hist = new Float32Array(560).fill(0);
     this.smooth = -90;
+    // Typical level of clear speech, learned over a few seconds of talk.
+    this.speech = -30;
+    this.open = 0;
   }
   process(inputs, outputs) {
     const out = outputs[0];
@@ -82,8 +87,12 @@ class VoicyGate extends AudioWorkletProcessor {
     const filled = Math.min(this.blk + 1, this.hist.length);
     for (let i = 0; i < filled; i++) if (this.hist[i] < floor) floor = this.hist[i];
     floor = Math.min(Math.max(floor, -90), -38);
-    this.streak = db > Math.max(floor + 10, -62) ? this.streak + 1 : 0;
-    if (this.streak >= this.K) this.last = this.blk;
+    const thr = Math.max(floor + 4, Math.min(Math.max(floor + 10, -62), this.speech - 20));
+    this.streak = db > thr ? this.streak + 1 : 0;
+    if (this.streak >= this.K) {
+      this.last = this.blk;
+      this.speech += (db - this.speech) * 0.002;
+    }
     const slots = this.D + 1;
     this.ring.set(x, (this.blk % slots) * 128);
     const j = this.blk - this.D;
@@ -97,13 +106,122 @@ class VoicyGate extends AudioWorkletProcessor {
       y[n] = j >= 0 ? this.ring[r + n] * this.gain : 0;
     }
     for (let c = 1; c < out.length; c++) out[c].set(y);
+    if (open) this.open++;
     this.blk++;
+    if (this.blk % 375 === 0) {
+      this.port.postMessage({ open: this.open, blocks: 375 });
+      this.open = 0;
+    }
     return true;
   }
 }
 registerProcessor("voicy-gate", VoicyGate);
 `;
-const gateUrl = URL.createObjectURL(new Blob([GATE_WORKLET], { type: "application/javascript" }));
+
+/** Everything sent is brought to this speech level, in dBFS (RMS of 2.7 ms blocks while talking). */
+const LEVEL_TARGET_DB = -30;
+const LEVEL_MAX_BOOST_DB = 18;
+const LEVEL_MAX_CUT_DB = 6;
+
+/**
+ * Automatic level, before the suppressor: brings speech to the same
+ * loudness for everyone, so a quiet mic is not half-heard and a loud one
+ * does not blast. Unlike Chromium's AGC it learns the level only while
+ * someone talks and moves slowly (3 dB/s up), so pauses do not pump and
+ * words do not swell. It starts from the level learned for this mic last
+ * time and adapts faster for the first seconds of speech. A limiter
+ * catches peaks the boost would clip. Reports the measured speech level,
+ * noise floor, gain and clipping once a second (375 blocks of 128 samples).
+ */
+const LEVEL_WORKLET = `
+class VoicyLevel extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+    this.zero = new Float32Array(128);
+    this.blk = 0; this.talk = 0;
+    const known = options && options.processorOptions && options.processorOptions.speech;
+    this.speech = typeof known === "number" ? known : ${LEVEL_TARGET_DB};
+    this.gainDb = this.want();
+    this.g = Math.pow(10, this.gainDb / 20); this.lim = 1;
+    this.hist = new Float32Array(560).fill(0);
+    this.smooth = -90;
+    this.st = { talk: 0, sum: 0, floor: 0, clip: 0, limited: 0 };
+  }
+  process(inputs, outputs) {
+    const out = outputs[0];
+    if (!out || !out[0]) return true;
+    const x = (inputs[0] && inputs[0][0]) || this.zero;
+    let e = 0;
+    let clip = 0;
+    for (let n = 0; n < 128; n++) {
+      e += x[n] * x[n];
+      if (x[n] >= 0.985 || x[n] <= -0.985) clip++;
+    }
+    const db = 10 * Math.log10(e / 128 + 1e-12);
+    this.smooth += (db - this.smooth) * 0.25;
+    this.hist[this.blk % this.hist.length] = this.smooth;
+    let floor = 0;
+    const filled = Math.min(this.blk + 1, this.hist.length);
+    for (let i = 0; i < filled; i++) if (this.hist[i] < floor) floor = this.hist[i];
+    floor = Math.max(floor, -100);
+    const talking = db > Math.max(floor + 12, -60);
+    if (talking) {
+      // Fast for the first few seconds of speech, then about 3 s of memory.
+      const early = ++this.talk < 1200;
+      this.speech += (db - this.speech) * (early ? 0.005 : 0.001);
+      this.gainDb += Math.min(early ? 0.03 : 0.008, Math.max(-0.016, this.want() - this.gainDb));
+    }
+    const g = Math.pow(10, this.gainDb / 20);
+    const y = out[0];
+    let limited = false;
+    for (let n = 0; n < 128; n++) {
+      this.g += (g - this.g) * 0.01;
+      const v = x[n] * this.g;
+      this.lim += (1 - this.lim) * 0.0005;
+      if (Math.abs(v * this.lim) > 0.89) {
+        this.lim = 0.89 / Math.abs(v);
+        limited = true;
+      }
+      y[n] = v * this.lim;
+    }
+    for (let c = 1; c < out.length; c++) out[c].set(y);
+    const st = this.st;
+    if (talking) { st.talk++; st.sum += db; }
+    st.floor += floor;
+    st.clip += clip;
+    if (limited) st.limited++;
+    if (++this.blk % 375 === 0) {
+      this.port.postMessage({ blocks: 375, talk: st.talk, speechDb: st.talk ? st.sum / st.talk : null, floorDb: st.floor / 375, clip: st.clip, limited: st.limited, gainDb: this.gainDb, level: this.talk > 1200 ? this.speech : null });
+      this.st = { talk: 0, sum: 0, floor: 0, clip: 0, limited: 0 };
+    }
+    return true;
+  }
+}
+VoicyLevel.prototype.want = function () {
+  return Math.min(${LEVEL_MAX_BOOST_DB}, Math.max(${-LEVEL_MAX_CUT_DB}, ${LEVEL_TARGET_DB} - this.speech));
+};
+registerProcessor("voicy-level", VoicyLevel);
+`;
+const workletUrl = URL.createObjectURL(new Blob([GATE_WORKLET, LEVEL_WORKLET], { type: "application/javascript" }));
+
+/** What the mic chain did over a stretch of time, for the logs. */
+export interface MicChainStats {
+  /** Seconds covered. */
+  secs: number;
+  /** Share of time with speech, %. */
+  talkPct: number;
+  /** Raw mic while talking and in the pauses, dBFS. */
+  speechDb?: number;
+  floorDb?: number;
+  /** Automatic level at the end of the stretch, dB. */
+  gainDb?: number;
+  /** Samples at full scale in the raw mic: the mic or Windows gain is too high. */
+  clip: number;
+  /** Share of time the limiter caught a peak, %. */
+  limitedPct: number;
+  /** Share of time the gate let sound through, %. */
+  gateOpenPct?: number;
+}
 
 // The package hardcodes CDN-style paths ending in .tar.gz; point it at the
 // copies bundled with the app instead.
@@ -206,7 +324,9 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
   private dfnNode: AudioWorkletNode | null = null;
   private rnnoise: RnnoiseWorkletNode | null = null;
   private gate: AudioWorkletNode | null = null;
+  private level: AudioWorkletNode | null = null;
   private track?: MediaStreamTrack;
+  private chain = { blocks: 0, talk: 0, speechSum: 0, floorSum: 0, clip: 0, limited: 0, gainDb: undefined as number | undefined, gateBlocks: 0, gateOpen: 0 };
 
   constructor(private mode: NoiseMode) {}
 
@@ -239,9 +359,10 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
     this.mono?.disconnect();
     this.current?.disconnect();
     this.gate?.disconnect();
+    this.level?.disconnect();
     this.rnnoise?.destroy();
     this.dfn?.destroy();
-    this.source = this.mono = this.current = this.gate = this.rnnoise = this.dfnNode = this.dfn = null;
+    this.source = this.mono = this.current = this.gate = this.level = this.rnnoise = this.dfnNode = this.dfn = null;
     await this.ctx?.close().catch(() => {});
     this.ctx = null;
   };
@@ -273,10 +394,68 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
 
   private async gateFor(ctx: AudioContext): Promise<AudioWorkletNode> {
     if (!this.gate) {
-      await ctx.audioWorklet.addModule(gateUrl);
-      this.gate = new AudioWorkletNode(ctx, "voicy-gate", { outputChannelCount: [1] });
+      await ctx.audioWorklet.addModule(workletUrl);
+      const gate = (this.gate = new AudioWorkletNode(ctx, "voicy-gate", { outputChannelCount: [1] }));
+      gate.port.onmessage = (e: MessageEvent<{ open: number; blocks: number }>) => {
+        if (this.gate !== gate) return;
+        this.chain.gateOpen += e.data.open;
+        this.chain.gateBlocks += e.data.blocks;
+      };
     }
     return this.gate;
+  }
+
+  private async levelFor(ctx: AudioContext): Promise<AudioWorkletNode> {
+    if (!this.level) {
+      await ctx.audioWorklet.addModule(workletUrl);
+      const key = `voicy.micSpeechDb:${this.track?.label ?? ""}`;
+      let speech: number | undefined;
+      try {
+        speech = Number(localStorage.getItem(key)) || undefined;
+      } catch {
+        // Learn it again.
+      }
+      const level = (this.level = new AudioWorkletNode(ctx, "voicy-level", { outputChannelCount: [1], processorOptions: { speech } }));
+      type Report = { blocks: number; talk: number; speechDb: number | null; floorDb: number; clip: number; limited: number; gainDb: number; level: number | null };
+      level.port.onmessage = ({ data: r }: MessageEvent<Report>) => {
+        if (this.level !== level) return;
+        if (r.level !== null && r.talk > 0) {
+          try {
+            localStorage.setItem(key, r.level.toFixed(1));
+          } catch {
+            // Only a head start for next time.
+          }
+        }
+        const c = this.chain;
+        c.blocks += r.blocks;
+        c.talk += r.talk;
+        if (r.speechDb !== null) c.speechSum += r.speechDb * r.talk;
+        c.floorSum += r.floorDb * r.blocks;
+        c.clip += r.clip;
+        c.limited += r.limited;
+        c.gainDb = r.gainDb;
+      };
+    }
+    return this.level;
+  }
+
+  /** What the chain did since the last call, then starts over. */
+  takeStats(): MicChainStats | undefined {
+    const c = this.chain;
+    this.chain = { blocks: 0, talk: 0, speechSum: 0, floorSum: 0, clip: 0, limited: 0, gainDb: undefined, gateBlocks: 0, gateOpen: 0 };
+    if (!c.blocks && !c.gateBlocks) return undefined;
+    const r1 = (v: number) => Math.round(v * 10) / 10;
+    const blocks = c.blocks || c.gateBlocks;
+    return {
+      secs: r1((blocks * 128) / 48000),
+      talkPct: c.blocks ? r1((c.talk / c.blocks) * 100) : 0,
+      speechDb: c.talk ? r1(c.speechSum / c.talk) : undefined,
+      floorDb: c.blocks ? r1(c.floorSum / c.blocks) : undefined,
+      gainDb: c.gainDb === undefined ? undefined : r1(c.gainDb),
+      clip: c.clip,
+      limitedPct: c.blocks ? r1((c.limited / c.blocks) * 100) : 0,
+      gateOpenPct: c.gateBlocks ? r1((c.gateOpen / c.gateBlocks) * 100) : undefined,
+    };
   }
 
   /** The suppressor for a mode; `null` where only the gate (or nothing) runs. */
@@ -310,15 +489,17 @@ export class VoicyNoiseProcessor implements TrackProcessor<Track.Kind.Audio, Aud
     const ctx = await this.context();
     const node = await this.nodeFor(ctx, this.mode);
     const gate = this.mode === "off" ? null : await this.gateFor(ctx);
+    const level = this.mode === "off" ? null : await this.levelFor(ctx);
     this.source?.disconnect();
     this.mono!.disconnect();
     this.current?.disconnect();
     this.gate?.disconnect();
+    this.level?.disconnect();
     this.source = ctx.createMediaStreamSource(new MediaStream([this.track]));
     this.source.connect(this.mono!);
-    // mic → mono → [suppressor] → [gate] → track
+    // mic → mono → [level] → [suppressor] → [gate] → track
     let tail: AudioNode = this.mono!;
-    for (const next of [node, gate]) {
+    for (const next of [level, node, gate]) {
       if (next) tail = tail.connect(next);
     }
     tail.connect(this.dest!);

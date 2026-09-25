@@ -2,6 +2,7 @@ mod api;
 mod auth;
 mod avatar;
 mod db;
+mod diag;
 mod error;
 mod invite_page;
 mod livekit;
@@ -79,6 +80,10 @@ pub type SharedState = Arc<AppState>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("timeline") {
+        return diag::timeline(&args[1..]);
+    }
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
@@ -94,6 +99,7 @@ async fn main() -> Result<()> {
 
     let bind = cfg.bind;
     let state = Arc::new(AppState { cfg, db, lk });
+    diag::spawn_host_sampler(diag::logs_dir(&state.cfg.db_path));
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("voicy-server listening on {bind}");
     axum::serve(listener, api::router(state))

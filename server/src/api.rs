@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::{
     auth::{hash, random_secret, AuthMember},
-    avatar,
+    avatar, diag,
     db::{now, Invite, Member, Redeem, Role},
     error::{ApiError, ApiResult},
     livekit::ECHO_SUFFIX,
@@ -273,11 +273,13 @@ async fn kick(
 struct LogsReq {
     #[serde(default)]
     version: String,
+    /// The app's clock when it sent the batch, ms. Moves every event onto
+    /// the server clock, so events from different apps line up.
+    #[serde(default)]
+    sent_at: Option<i64>,
     entries: Vec<Value>,
 }
 
-/// Per-member diagnostic log files are rotated at this size.
-const LOG_FILE_MAX: u64 = 4 << 20;
 const LOG_BATCH_MAX: usize = 500;
 const LOG_ENTRY_MAX: usize = 4096;
 
@@ -292,26 +294,20 @@ async fn client_logs(
     if req.entries.len() > LOG_BATCH_MAX {
         return Err(ApiError::BadRequest("too many log entries"));
     }
-    let dir = std::path::Path::new(&s.cfg.db_path).with_file_name("logs");
+    let dir = diag::logs_dir(&s.cfg.db_path);
     let version: String = req.version.chars().take(32).collect();
+    let skew = req.sent_at.map(|t| diag::now_ms() - t).filter(|d| d.abs() < 86_400_000);
     let mut out = String::new();
     for entry in req.entries {
-        let line = json!({ "at": now(), "who": m.nickname, "v": version, "e": entry }).to_string();
+        let ts = skew.and_then(|d| Some(entry.get("t")?.as_i64()? + d));
+        let line = json!({ "at": now(), "ts": ts, "who": m.nickname, "v": version, "e": entry }).to_string();
         if line.len() <= LOG_ENTRY_MAX {
             out.push_str(&line);
             out.push('\n');
         }
     }
-    let path = dir.join(format!("{}.log", m.id));
-    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-        use std::io::Write;
-        std::fs::create_dir_all(&dir)?;
-        if std::fs::metadata(&path).map(|md| md.len() > LOG_FILE_MAX).unwrap_or(false) {
-            std::fs::rename(&path, path.with_extension("old.log"))?;
-        }
-        std::fs::OpenOptions::new().create(true).append(true).open(&path)?.write_all(out.as_bytes())
-    })
-    .await??;
+    let name = format!("{}.log", m.id);
+    tokio::task::spawn_blocking(move || diag::append(&dir, &name, &out)).await??;
     Ok(StatusCode::NO_CONTENT)
 }
 

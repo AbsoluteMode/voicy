@@ -62,6 +62,41 @@ function rawTrack(track: LocalAudioTrack): MediaStreamTrack {
 /** Above either, the peer's connection is audibly unstable. */
 export const NET_BAD = { lossPct: 2, repairPct: 3 };
 
+/** Seconds of stats in one `audio` log event. */
+const STATS_LOG_SECS = 10;
+/** A second of received audio louder than this, dBFS, had someone talking in it. */
+const TALK_DB = -50;
+
+interface PeerWindow {
+  name: string;
+  n: number;
+  loss: number;
+  lossMax: number;
+  repair: number;
+  repairMax: number;
+  jitterMax: number;
+  jb: number;
+  jbN: number;
+  talk: number;
+  talkN: number;
+  peakDb: number;
+}
+
+function newWindow() {
+  return {
+    n: 0,
+    kbps: 0,
+    kbpsN: 0,
+    rtt: 0,
+    rttN: 0,
+    lossMax: 0,
+    jitterMax: 0,
+    low: 0,
+    path: undefined as string | undefined,
+    peers: new Map<string, PeerWindow>(),
+  };
+}
+
 export interface ScreenShare {
   identity: string;
   name: string;
@@ -589,11 +624,14 @@ class VoiceSession {
     this.lossy = this.clean = 0;
     this.peerNet.clear();
     this.lastRecv.clear();
+    this.win = newWindow();
+    const proc = this.micTrack()?.getProcessor();
+    if (proc instanceof VoicyNoiseProcessor) proc.takeStats();
     this.statsTimer = setInterval(() => void this.sampleStats(), 1000);
   }
 
   private peerNet = new Map<string, PeerNet>();
-  private lastRecv = new Map<string, { lost: number; got: number; samples: number; repaired: number }>();
+  private lastRecv = new Map<string, { lost: number; got: number; samples: number; repaired: number; energy: number; dur: number; jbDelay: number; jbOut: number }>();
 
   /** Receive-side quality per remote peer, from WebRTC inbound stats. */
   private async sampleReceivers() {
@@ -609,6 +647,10 @@ class VoiceSession {
           got: r.packetsReceived ?? 0,
           samples: r.totalSamplesReceived ?? 0,
           repaired: (r.concealedSamples ?? 0) + (r.insertedSamplesForDeceleration ?? 0) + (r.removedSamplesForAcceleration ?? 0),
+          energy: r.totalAudioEnergy ?? 0,
+          dur: r.totalSamplesDuration ?? 0,
+          jbDelay: r.jitterBufferDelay ?? 0,
+          jbOut: r.jitterBufferEmittedCount ?? 0,
         };
         const prev = this.lastRecv.get(p.identity);
         this.lastRecv.set(p.identity, now);
@@ -616,12 +658,37 @@ class VoiceSession {
         const packets = now.got - prev.got + (now.lost - prev.lost);
         const samples = now.samples - prev.samples;
         const repairPct = samples > 0 ? Math.round(((now.repaired - prev.repaired) / samples) * 1000) / 10 : 0;
-        this.peerNet.set(p.identity, {
+        const net: PeerNet = {
           lossPct: packets > 0 ? Math.round(((now.lost - prev.lost) / packets) * 1000) / 10 : 0,
           jitterMs: Math.round((r.jitter ?? 0) * 1000),
           repairPct,
           bufferMs: this.adaptBuffer(p.identity, receiver, repairPct),
-        });
+        };
+        this.peerNet.set(p.identity, net);
+        // How loud they arrive (average power of the second, before our
+        // volume slider) and how long audio waits in the jitter buffer.
+        const dur = now.dur - prev.dur;
+        const db = dur > 0 ? 10 * Math.log10((now.energy - prev.energy) / dur + 1e-12) : undefined;
+        const jbMs = now.jbOut > prev.jbOut ? ((now.jbDelay - prev.jbDelay) / (now.jbOut - prev.jbOut)) * 1000 : undefined;
+        let w = this.win.peers.get(p.identity);
+        if (!w) this.win.peers.set(p.identity, (w = { name: p.name || p.identity, n: 0, loss: 0, lossMax: 0, repair: 0, repairMax: 0, jitterMax: 0, jb: 0, jbN: 0, talk: 0, talkN: 0, peakDb: -120 }));
+        w.n++;
+        w.loss += net.lossPct;
+        w.lossMax = Math.max(w.lossMax, net.lossPct);
+        w.repair += repairPct;
+        w.repairMax = Math.max(w.repairMax, repairPct);
+        w.jitterMax = Math.max(w.jitterMax, net.jitterMs);
+        if (jbMs !== undefined) {
+          w.jb += jbMs;
+          w.jbN++;
+        }
+        if (db !== undefined) {
+          w.peakDb = Math.max(w.peakDb, db);
+          if (db > TALK_DB) {
+            w.talk += db;
+            w.talkN++;
+          }
+        }
       });
     }
     this.refresh();
@@ -657,7 +724,11 @@ class VoiceSession {
     const sender = this.micTrack()?.sender;
     if (!sender) return this.set({ stats: undefined });
     const stats: AudioStats = {};
+    const pairs: { local: string; ok: boolean }[] = [];
+    const locals = new Map<string, string>();
     (await sender.getStats()).forEach((r) => {
+      if (r.type === "candidate-pair") pairs.push({ local: r.localCandidateId, ok: r.state === "succeeded" && r.nominated });
+      else if (r.type === "local-candidate") locals.set(r.id, r.candidateType === "relay" ? `relay-${r.relayProtocol ?? "?"}` : r.protocol);
       if (r.type === "outbound-rtp") {
         const now = r.timestamp as number;
         const bytes = r.bytesSent as number;
@@ -674,6 +745,66 @@ class VoiceSession {
     this.set({ stats });
     this.refresh();
     void this.adaptSendBitrate(sender, stats.lossPct ?? 0);
+    const w = this.win;
+    w.n++;
+    const pair = pairs.find((c) => c.ok);
+    if (pair) w.path = locals.get(pair.local);
+    if (stats.sendKbps !== undefined) {
+      w.kbps += stats.sendKbps;
+      w.kbpsN++;
+    }
+    if (stats.rttMs !== undefined) {
+      w.rtt += stats.rttMs;
+      w.rttN++;
+    }
+    w.lossMax = Math.max(w.lossMax, stats.lossPct ?? 0);
+    w.jitterMax = Math.max(w.jitterMax, stats.jitterMs ?? 0);
+    if (this.sendLow) w.low++;
+    if (w.n >= STATS_LOG_SECS) this.logWindow();
+  }
+
+  private win = newWindow();
+
+  /**
+   * One `audio` event per ten seconds: how our voice leaves (mic chain and
+   * uplink) and how everyone else arrives here. Read together with the
+   * same event from the others to see where a voice gets lost.
+   */
+  private logWindow() {
+    const w = this.win;
+    this.win = newWindow();
+    const avg = (sum: number, n: number) => (n ? Math.round(sum / n) : undefined);
+    const r1 = (v: number) => Math.round(v * 10) / 10;
+    const proc = this.micTrack()?.getProcessor();
+    const ctx = this.ctx;
+    const volumes = getSettings().volumes;
+    log("audio", {
+      send: {
+        kbps: avg(w.kbps, w.kbpsN),
+        rtt: avg(w.rtt, w.rttN),
+        lossMax: r1(w.lossMax),
+        jitterMax: w.jitterMax,
+        low: w.low || undefined,
+        path: w.path,
+      },
+      mic: proc instanceof VoicyNoiseProcessor ? proc.takeStats() : undefined,
+      micOn: !this.snap.micMuted,
+      outMs: ctx ? Math.round(((ctx.outputLatency || 0) + ctx.baseLatency) * 1000) : undefined,
+      peers: [...w.peers.entries()].map(([id, p]) => ({
+        who: p.name,
+        loss: r1(p.loss / p.n),
+        lossMax: r1(p.lossMax),
+        repair: r1(p.repair / p.n),
+        repairMax: r1(p.repairMax),
+        jitterMax: p.jitterMax,
+        jbMs: avg(p.jb, p.jbN),
+        bufferMs: this.bufferTarget.get(id)?.ms || undefined,
+        talkDb: avg(p.talk, p.talkN),
+        talkSecs: p.talkN,
+        peakDb: Math.round(p.peakDb),
+        vol: volumes[id] !== undefined && volumes[id] !== 1 ? volumes[id] : undefined,
+      })),
+    });
   }
 
   private sendLow = false;
@@ -827,6 +958,42 @@ class VoiceSession {
         log(`track-${ev}`, { label: raw.label, state: raw.readyState });
         if (ev === TrackEvent.Restarted) watchTrack(raw, "mic");
       });
+    }
+    track.on(TrackEvent.Ended, () => void this.recoverMic(track));
+  }
+
+  private recovering = false;
+
+  /**
+   * A USB mic that drops off the bus for a moment ends the track. LiveKit
+   * tries to reopen it at once, while Windows still lists no device, and
+   * then leaves it muted: friends hear nothing until a mute toggle. Keep
+   * trying until the mic is back, then open it again as wanted.
+   */
+  private async recoverMic(track: LocalAudioTrack) {
+    if (this.recovering) return;
+    this.recovering = true;
+    const room = this.room;
+    const started = Date.now();
+    const back = async () => {
+      if (rawTrack(track).readyState !== "live") return false;
+      if (track.isMuted && this.micWanted && !this.snap.deafened) await this.syncMic(room!);
+      log("mic-recovered", { ms: Date.now() - started });
+      return true;
+    };
+    try {
+      for (let i = 0; i < 170; i++) {
+        await new Promise((r) => setTimeout(r, 700));
+        if (!room || this.room !== room || this.micTrack() !== track) return;
+        if (await back()) return;
+        await track.restartTrack(captureOptions()).catch((e) => {
+          if (i % 10 === 0) log("mic-recover-failed", { msg: String(e?.message ?? e) });
+        });
+        if (this.room === room && this.micTrack() === track && (await back())) return;
+      }
+      log("mic-recover-gave-up");
+    } finally {
+      this.recovering = false;
     }
   }
 
