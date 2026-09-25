@@ -768,11 +768,10 @@ function NicknameDialog(props: { host: string; current: string; onClose: () => v
     }
   }
   return (
-    <Modal title="Твой ник" sub="Так тебя видят на этом сервере." icon={<Pencil size={20} />} onClose={props.onClose}>
+    <Modal title="Твой ник" icon={<Pencil size={20} />} onClose={props.onClose}>
       <form onSubmit={save}>
         <label className="field">
-          <span>Ник</span>
-          <input type="text" autoFocus maxLength={32} value={value} onChange={(e) => setValue(e.target.value)} />
+          <input type="text" autoFocus maxLength={32} aria-label="Ник" value={value} onChange={(e) => setValue(e.target.value)} />
         </label>
         {error && <div className="error">{error}</div>}
         <div className="foot">
