@@ -162,10 +162,19 @@ const CUES = {
   peerLeave: { tones: [880, 587], gap: 0.09, len: 0.14, level: 0.07 },
 };
 
-function cue(kind: keyof typeof CUES) {
+let cueCtx: AudioContext | null = null;
+
+/**
+ * Plays on the call's own audio context when there is one, else on a shared
+ * one: every new context opens another stream to the headset, and wireless
+ * ones click or hiss when that happens.
+ */
+function cue(kind: keyof typeof CUES, callCtx?: AudioContext | null) {
   const { tones, gap, len, level } = CUES[kind];
   try {
-    const ctx = new AudioContext();
+    let ctx = callCtx && callCtx.state === "running" ? callCtx : cueCtx;
+    if (!ctx || ctx.state === "closed") ctx = cueCtx = new AudioContext({ latencyHint: "interactive" });
+    void ctx.resume();
     tones.forEach((hz, i) => {
       const osc = new OscillatorNode(ctx, { frequency: hz, type: "sine" });
       const gain = new GainNode(ctx, { gain: 0 });
@@ -176,8 +185,8 @@ function cue(kind: keyof typeof CUES) {
       osc.connect(gain).connect(ctx.destination);
       osc.start(t);
       osc.stop(t + len + 0.01);
+      osc.onended = () => gain.disconnect();
     });
-    setTimeout(() => void ctx.close(), (tones.length * gap + len) * 1000 + 200);
   } catch {
     // Cues are a nicety.
   }
@@ -279,12 +288,15 @@ class VoiceSession {
   async connect(host: string, roomId: string) {
     const gen = ++this.generation;
     const stale = () => gen !== this.generation;
-    this.teardown();
+    // Switching rooms keeps the mic, noise suppression and playback running:
+    // restarting them glitches the headset and stalls the UI.
+    this.teardown(true);
     logTo(host);
     log("connect", { room: roomId, ptt: getSettings().pushToTalk, noise: getSettings().noise });
     // In push-to-talk mode the mic starts closed.
     if (getSettings().pushToTalk) this.micWanted = false;
-    this.set({ ...IDLE, host, room: roomId, state: "connecting", micMuted: !this.micWanted });
+    const deafened = this.snap.deafened;
+    this.set({ ...IDLE, host, room: roomId, state: "connecting", micMuted: !this.micWanted || deafened, deafened });
 
     try {
       const { url, token } = await api<{ url: string; token: string }>(host, "POST", "/api/token", { room: roomId });
@@ -292,9 +304,12 @@ class VoiceSession {
 
       // One 48 kHz context for all playback: no resampling, and gain nodes
       // let per-member volume go above 100%.
-      const ctx = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
-      this.ctx = ctx;
-      ctx.onstatechange = () => log("play-ctx", { state: ctx.state });
+      let ctx = this.ctx;
+      if (!ctx || ctx.state === "closed") {
+        const fresh = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
+        fresh.onstatechange = () => log("play-ctx", { state: fresh.state });
+        ctx = this.ctx = fresh;
+      }
       const s = getSettings();
       const room = new Room({
         // Video only: each viewer gets the stream layer that fits its tile
@@ -311,12 +326,12 @@ class VoiceSession {
 
       room
         .on(RoomEvent.ParticipantConnected, (p) => {
-          if (!this.snap.deafened) cue("peerJoin");
+          if (!this.snap.deafened) cue("peerJoin", this.ctx);
           this.applyVolume(p);
           this.refresh();
         })
         .on(RoomEvent.ParticipantDisconnected, () => {
-          if (!this.snap.deafened) cue("peerLeave");
+          if (!this.snap.deafened) cue("peerLeave", this.ctx);
           this.refresh();
         })
         .on(RoomEvent.ActiveSpeakersChanged, this.refresh)
@@ -392,7 +407,7 @@ class VoiceSession {
       await room.connect(url, token, { autoSubscribe: true });
       if (stale()) return;
       log("connected");
-      cue("join");
+      cue("join", this.ctx);
       this.set({ state: "connected" });
       // Published closed even in push-to-talk mode, so the first press
       // does not wait for the mic and the noise model to start.
@@ -732,7 +747,11 @@ class VoiceSession {
     if (this.snap.echo) this.set({ echo: false });
   }
 
-  private teardown() {
+  /** Mic track carried over from the previous room, with its processor. */
+  private keptMic: LocalAudioTrack | undefined;
+
+  /** `keepAudio`: leaving for another room, so the mic and playback stay up. */
+  private teardown(keepAudio = false) {
     this.stopEcho();
     this.stopMeters();
     clearInterval(this.statsTimer);
@@ -741,9 +760,20 @@ class VoiceSession {
     this.micPublishing = null;
     this.micUpdate = Promise.resolve();
     room?.removeAllListeners();
-    void room?.disconnect();
-    void this.ctx?.close();
-    this.ctx = null;
+    const mic = keepAudio ? (room?.localParticipant.getTrackPublication(Track.Source.Microphone)?.track as LocalAudioTrack | undefined) : undefined;
+    if (mic) {
+      if (this.keptMic !== mic) this.keptMic?.stop();
+      this.keptMic = mic;
+      // Everything but the mic ends with the room (e.g. a screen share).
+      room?.localParticipant.trackPublications.forEach((pub) => pub.track !== mic && pub.track?.stop());
+    }
+    void room?.disconnect(!mic);
+    if (!keepAudio) {
+      this.keptMic?.stop();
+      this.keptMic = undefined;
+      void this.ctx?.close();
+      this.ctx = null;
+    }
   }
 
   async disconnect() {
@@ -828,10 +858,14 @@ class VoiceSession {
     if (this.micPublishing) return this.micPublishing;
     const gen = this.generation;
     const current = () => this.room === room && gen === this.generation;
+    const kept = this.keptMic;
+    this.keptMic = undefined;
     const pending = (async () => {
-      log("mic-capture");
-      const track = await createLocalAudioTrack(captureOptions());
-      this.watchMic(track);
+      const reuse = kept && rawTrack(kept).readyState === "live" ? kept : undefined;
+      if (kept && !reuse) kept.stop();
+      log(reuse ? "mic-reuse" : "mic-capture");
+      const track = reuse ?? (await createLocalAudioTrack(captureOptions()));
+      if (!reuse) this.watchMic(track);
       let published = false;
       try {
         if (!current()) return;
@@ -917,14 +951,14 @@ class VoiceSession {
   /** Mic toggle from the button or the hotkey, with a Discord-style cue. */
   async toggleMic(source = "button") {
     const muted = !this.snap.micMuted;
-    cue(muted ? "off" : "on");
+    cue(muted ? "off" : "on", this.ctx);
     await this.setMicMuted(muted, source);
   }
 
   async toggleDeafen(source = "button") {
     const deafened = !this.snap.deafened;
     log("deafen-toggle", { source });
-    cue(deafened ? "off" : "on");
+    cue(deafened ? "off" : "on", this.ctx);
     await this.setDeafened(deafened);
   }
 
