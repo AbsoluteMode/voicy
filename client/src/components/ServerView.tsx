@@ -343,11 +343,19 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
     return () => clearTimeout(t);
   }, [myRoom, peerKey, loadRooms]);
 
+  // Where we ourselves are comes from this app's own connection only: the
+  // poll lags behind our moves and still lists a session that just died
+  // (an update restart, a crash) for a while.
+  const others = useMemo(
+    () => rooms.map((r) => ({ ...r, participants: r.participants.filter((p) => p.id !== server.member_id) })),
+    [rooms, server.member_id],
+  );
   const inVoice = useMemo(() => {
-    const ids = new Set(rooms.flatMap((r) => r.participants.map((p) => p.id)));
+    const ids = new Set(others.flatMap((r) => r.participants.map((p) => p.id)));
     if (here) v.peers.forEach((p) => ids.add(p.identity));
+    if (connected) ids.add(server.member_id);
     return ids;
-  }, [rooms, here, v.peers]);
+  }, [others, here, v.peers, connected, server.member_id]);
   const away = members.filter((m) => !inVoice.has(m.id));
 
   async function join(roomId: string) {
@@ -362,7 +370,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
 
   /** The dock button: where people already are, else the empty room. */
   const joinBest = () => {
-    const target = rooms.find((r) => r.participants.length > 0) ?? rooms[0];
+    const target = others.find((r) => r.participants.length > 0) ?? others[0];
     if (target) void join(target.id);
   };
 
@@ -521,10 +529,11 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
           </div>
         )}
 
-        {rooms.map((r) => {
+        {others.map((r) => {
           const mine = r.id === myRoom;
           // Our own room is live from LiveKit; the others come from the poll.
-          const count = mine ? v.peers.length : r.participants.length;
+          const joining = mine && !v.peers.some((p) => p.isLocal);
+          const count = mine ? Math.max(v.peers.length, 1) : r.participants.length;
           return (
             <div key={r.id} data-room={r.id} className={`room${mine ? " mine" : ""}${drag && drag.over === r.id && drag.from !== r.id ? " drop" : ""}`}>
               <button
@@ -536,6 +545,15 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
                 <span className="sec-label">{r.name}</span>
                 <span className="room-count">{count === 0 ? "пусто · зайти" : mine ? `${count}` : `${count} · зайти`}</span>
               </button>
+              {joining && (
+                <div className="mrow pending">
+                  <Avatar className="av sm" id={server.member_id} name={server.nickname} src={avatarFor(server.member_id)} />
+                  <div className="name">
+                    {server.nickname}
+                    <span className="me"> · подключаюсь…</span>
+                  </div>
+                </div>
+              )}
               {mine
                 ? v.peers.map((p) => {
                     const m = byId.get(p.identity);

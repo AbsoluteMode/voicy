@@ -213,7 +213,8 @@ function cue(kind: keyof typeof CUES, callCtx?: AudioContext | null) {
     tones.forEach((hz, i) => {
       const osc = new OscillatorNode(ctx, { frequency: hz, type: "sine" });
       const gain = new GainNode(ctx, { gain: 0 });
-      const t = ctx.currentTime + i * gap;
+      // A short lead-in: the first samples on a just-woken stream can glitch.
+      const t = ctx.currentTime + 0.05 + i * gap;
       gain.gain.setValueAtTime(0, t);
       gain.gain.linearRampToValueAtTime(level, t + 0.01);
       gain.gain.exponentialRampToValueAtTime(0.001, t + len);
@@ -433,7 +434,7 @@ class VoiceSession {
                     ? undefined
                     : "lost";
           log("disconnected", { reason, endReason });
-          if (endReason) cue("leave");
+          if (endReason) cue("leave", this.ctx);
           this.teardown();
           this.set({ ...IDLE, host, room: roomId, endReason });
         });
@@ -442,12 +443,14 @@ class VoiceSession {
       await room.connect(url, token, { autoSubscribe: true });
       if (stale()) return;
       log("connected");
-      cue("join", this.ctx);
       this.set({ state: "connected" });
       // Published closed even in push-to-talk mode, so the first press
       // does not wait for the mic and the noise model to start.
       await this.publishMic(room);
       if (stale()) return;
+      // After the noise model is up: starting it loads the CPU hard enough
+      // to make a cue played meanwhile crackle.
+      cue("join", this.ctx);
       this.refresh();
       this.startStats();
       this.meterTimer = setInterval(this.tickMeters, 50);
@@ -902,14 +905,16 @@ class VoiceSession {
     if (!keepAudio) {
       this.keptMic?.stop();
       this.keptMic = undefined;
-      void this.ctx?.close();
+      // Closed a moment later, so a leave cue on it can finish.
+      const ctx = this.ctx;
+      setTimeout(() => void ctx?.close(), 800);
       this.ctx = null;
     }
   }
 
   async disconnect() {
     log("leave");
-    if (this.room) cue("leave");
+    if (this.room) cue("leave", this.ctx);
     void flushLogs();
     this.generation++;
     const { host, room } = this.snap;
