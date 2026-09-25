@@ -28,9 +28,18 @@ export interface RoomInfo {
 
 export interface ChatMessage {
   id: number;
-  room: string;
+  room?: string;
   member_id: string;
   nickname: string;
+  text: string;
+  created_at: number;
+}
+
+export interface DirectThread {
+  peer_id: string;
+  nickname: string;
+  message_id: number;
+  member_id: string;
   text: string;
   created_at: number;
 }

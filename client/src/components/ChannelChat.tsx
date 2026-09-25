@@ -4,10 +4,9 @@ import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { api, ChatMessage, errorText } from "../lib/tauri";
 import { Modal } from "./ui";
 
-export function ChannelChat({ host, room, roomName, memberId, onClose }: {
-  host: string; room?: string; roomName?: string; memberId: string; onClose?: () => void;
+export function ChatMessages({ host, path, memberId, label, compact = false }: {
+  host: string; path: string; memberId: string; label: string; compact?: boolean;
 }) {
-  const path = room ? `/api/rooms/${room}/messages` : "/api/messages";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
@@ -30,7 +29,7 @@ export function ChannelChat({ host, room, roomName, memberId, onClose }: {
       } catch (e) {
         if (active) {
           const detail = errorText(e);
-          setError(!room && detail.includes("404") ? "Общий чат заработает после обновления сервера Voicy." : detail);
+          setError(detail.includes("404") ? "Чат заработает после обновления сервера Voicy." : detail);
         }
       }
     }
@@ -68,9 +67,9 @@ export function ChannelChat({ host, room, roomName, memberId, onClose }: {
     }
   }
 
-  const content = (
-    <>
-      <div className="chat-list" ref={list} role="log" aria-label={roomName ? `Сообщения ${roomName}` : "Сообщения общего чата"}>
+  return (
+    <div className="chat-body">
+      <div className="chat-list" ref={list} role="log" aria-label={label}>
         {messages.length === 0 && !error && <div className="chat-empty">Пока сообщений нет. Напиши первым.</div>}
         {messages.map((message) => (
           <div className={`chat-message${message.member_id === memberId ? " mine" : ""}`} key={message.id}>
@@ -92,21 +91,23 @@ export function ChannelChat({ host, room, roomName, memberId, onClose }: {
           onKeyDown={onKeyDown}
           maxLength={2000}
           rows={2}
-          placeholder="Сообщение · Enter — отправить, Shift+Enter — новая строка"
+          placeholder={compact ? "Написать сообщение…" : "Сообщение · Enter — отправить, Shift+Enter — новая строка"}
           aria-label="Сообщение"
         />
         <button className="btn primary" disabled={sending || !draft.trim()} title="Отправить сообщение" aria-label="Отправить сообщение">
           <Send size={18} />
         </button>
       </form>
-    </>
+    </div>
   );
+}
 
-  if (room) return <Modal title={`Чат · ${roomName}`} icon={<MessageCircle size={20} />} onClose={onClose} wide>{content}</Modal>;
+export function ChannelChat({ host, room, roomName, memberId, onClose }: {
+  host: string; room: string; roomName: string; memberId: string; onClose: () => void;
+}) {
   return (
-    <aside className="server-chat" aria-label="Общий чат сервера">
-      <div className="server-chat-head"><MessageCircle size={18} /><strong>Общий чат</strong></div>
-      {content}
-    </aside>
+    <Modal title={`Чат · ${roomName}`} icon={<MessageCircle size={20} />} onClose={onClose} wide>
+      <ChatMessages host={host} path={`/api/rooms/${room}/messages`} memberId={memberId} label={`Сообщения ${roomName}`} />
+    </Modal>
   );
 }

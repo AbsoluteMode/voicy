@@ -34,6 +34,8 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/token", post(token))
         .route("/api/rooms", get(rooms))
         .route("/api/messages", get(server_chat_messages).post(send_server_chat_message))
+        .route("/api/dms", get(direct_threads))
+        .route("/api/dms/{peer}", get(direct_messages).post(send_direct_message))
         .route("/api/rooms/{room}/messages", get(chat_messages).post(send_chat_message))
         .route("/api/members", get(members))
         .route("/api/members/{id}/kick", post(kick))
@@ -250,6 +252,40 @@ async fn send_server_chat_message(
     Json(req): Json<ChatReq>,
 ) -> ApiResult<Json<crate::db::ChatMessage>> {
     Ok(Json(s.db.add_chat_message("server", &m, clean_chat_text(&req.text)?)?))
+}
+
+async fn direct_threads(
+    State(s): State<SharedState>,
+    AuthMember(m): AuthMember,
+) -> ApiResult<Json<Vec<crate::db::DirectThread>>> {
+    Ok(Json(s.db.direct_threads(&m.id)?))
+}
+
+fn valid_direct_peer(s: &SharedState, member_id: &str, peer_id: &str) -> ApiResult<()> {
+    if peer_id == member_id || s.db.member(peer_id)?.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    Ok(())
+}
+
+async fn direct_messages(
+    State(s): State<SharedState>,
+    AuthMember(m): AuthMember,
+    Path(peer): Path<String>,
+    Query(query): Query<ChatQuery>,
+) -> ApiResult<Json<Vec<crate::db::DirectMessage>>> {
+    valid_direct_peer(&s, &m.id, &peer)?;
+    Ok(Json(s.db.direct_messages(&m.id, &peer, query.after.unwrap_or(0).max(0))?))
+}
+
+async fn send_direct_message(
+    State(s): State<SharedState>,
+    AuthMember(m): AuthMember,
+    Path(peer): Path<String>,
+    Json(req): Json<ChatReq>,
+) -> ApiResult<Json<crate::db::DirectMessage>> {
+    valid_direct_peer(&s, &m.id, &peer)?;
+    Ok(Json(s.db.add_direct_message(&m, &peer, clean_chat_text(&req.text)?)?))
 }
 
 fn clean_chat_text(raw: &str) -> ApiResult<&str> {

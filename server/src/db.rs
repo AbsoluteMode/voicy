@@ -92,6 +92,25 @@ pub struct ChatMessage {
     pub created_at: i64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct DirectMessage {
+    pub id: i64,
+    pub member_id: String,
+    pub nickname: String,
+    pub text: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DirectThread {
+    pub peer_id: String,
+    pub nickname: String,
+    pub message_id: i64,
+    pub member_id: String,
+    pub text: String,
+    pub created_at: i64,
+}
+
 pub enum Redeem {
     Ok(Member),
     InvalidCode,
@@ -139,6 +158,16 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS chat_messages_room_id ON chat_messages(room, id);
+CREATE TABLE IF NOT EXISTS direct_messages (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender_id    TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    recipient_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    nickname     TEXT NOT NULL,
+    text         TEXT NOT NULL,
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS direct_messages_sender_id ON direct_messages(sender_id, id);
+CREATE INDEX IF NOT EXISTS direct_messages_recipient_id ON direct_messages(recipient_id, id);
 ";
 
 /// `created_by` of an owner invite made by a redeploy while an owner exists.
@@ -189,6 +218,59 @@ impl Db {
             id, room: room.to_owned(), member_id: member.id.clone(),
             nickname: member.nickname.clone(), text: text.to_owned(), created_at,
         })
+    }
+
+    pub fn direct_messages(&self, member_id: &str, peer_id: &str, after: i64) -> Result<Vec<DirectMessage>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, sender_id, nickname, text, created_at FROM
+             (SELECT id, sender_id, nickname, text, created_at FROM direct_messages
+              WHERE ((sender_id = ?1 AND recipient_id = ?2) OR (sender_id = ?2 AND recipient_id = ?1))
+                AND id > ?3 ORDER BY id DESC LIMIT 100) ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(params![member_id, peer_id, after], |r| {
+            Ok(DirectMessage { id: r.get(0)?, member_id: r.get(1)?, nickname: r.get(2)?, text: r.get(3)?, created_at: r.get(4)? })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn direct_threads(&self, member_id: &str) -> Result<Vec<DirectThread>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "WITH conversations AS (
+               SELECT CASE WHEN sender_id = ?1 THEN recipient_id ELSE sender_id END AS peer_id, MAX(id) AS message_id
+               FROM direct_messages WHERE sender_id = ?1 OR recipient_id = ?1 GROUP BY peer_id
+             )
+             SELECT m.id, m.nickname, d.id, d.sender_id, d.text, d.created_at
+             FROM conversations c JOIN members m ON m.id = c.peer_id JOIN direct_messages d ON d.id = c.message_id
+             ORDER BY d.id DESC LIMIT 100",
+        )?;
+        let rows = stmt.query_map([member_id], |r| {
+            Ok(DirectThread {
+                peer_id: r.get(0)?, nickname: r.get(1)?, message_id: r.get(2)?,
+                member_id: r.get(3)?, text: r.get(4)?, created_at: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn add_direct_message(&self, sender: &Member, recipient_id: &str, text: &str) -> Result<DirectMessage> {
+        let conn = self.conn();
+        let created_at = now();
+        conn.execute(
+            "INSERT INTO direct_messages (sender_id, recipient_id, nickname, text, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![sender.id, recipient_id, sender.nickname, text, created_at],
+        )?;
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "DELETE FROM direct_messages WHERE
+              ((sender_id = ?1 AND recipient_id = ?2) OR (sender_id = ?2 AND recipient_id = ?1))
+              AND id < (SELECT id FROM direct_messages WHERE
+                (sender_id = ?1 AND recipient_id = ?2) OR (sender_id = ?2 AND recipient_id = ?1)
+                ORDER BY id DESC LIMIT 1 OFFSET 999)",
+            params![sender.id, recipient_id],
+        )?;
+        Ok(DirectMessage { id, member_id: sender.id.clone(), nickname: sender.nickname.clone(), text: text.to_owned(), created_at })
     }
 
     /// Name set in the app; the install-time name applies until then.
@@ -381,7 +463,8 @@ impl Db {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute_batch(
-            "DELETE FROM chat_messages;
+            "DELETE FROM direct_messages;
+             DELETE FROM chat_messages;
              DELETE FROM avatars;
              DELETE FROM members;
              DELETE FROM invites;
@@ -481,5 +564,25 @@ mod tests {
         assert_eq!(db.chat_messages("server", 0).unwrap()[0].text, "everyone");
         db.wipe().unwrap();
         assert!(db.chat_messages("r1", 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn direct_messages_stay_between_the_two_members() {
+        let db = db();
+        db.ensure_owner_invite("owner", 0).unwrap();
+        let Redeem::Ok(alice) = db.redeem_invite("owner", "Alice", "s1", 1).unwrap() else { panic!() };
+        db.create_invite("bob", &alice.id, 1, None).unwrap();
+        db.create_invite("cara", &alice.id, 1, None).unwrap();
+        let Redeem::Ok(bob) = db.redeem_invite("bob", "Bob", "s2", 2).unwrap() else { panic!() };
+        let Redeem::Ok(cara) = db.redeem_invite("cara", "Cara", "s3", 3).unwrap() else { panic!() };
+        let first = db.add_direct_message(&alice, &bob.id, "hi").unwrap();
+        db.add_direct_message(&bob, &alice.id, "hello").unwrap();
+        db.add_direct_message(&alice, &cara.id, "private").unwrap();
+        assert_eq!(db.direct_messages(&alice.id, &bob.id, 0).unwrap().iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["hi", "hello"]);
+        assert_eq!(db.direct_messages(&bob.id, &alice.id, first.id).unwrap()[0].text, "hello");
+        assert_eq!(db.direct_messages(&bob.id, &cara.id, 0).unwrap().len(), 0);
+        assert_eq!(db.direct_threads(&bob.id).unwrap().iter().map(|t| t.peer_id.as_str()).collect::<Vec<_>>(), [alice.id.as_str()]);
+        db.delete_member(&alice.id).unwrap();
+        assert!(db.direct_messages(&bob.id, &alice.id, 0).unwrap().is_empty());
     }
 }

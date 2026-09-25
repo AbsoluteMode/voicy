@@ -1,5 +1,5 @@
 import { ImagePlus, LogOut, Maximize2, MessageCircle, MonitorPlay, Pencil, Search, Shield, ShieldOff, Trash2, Upload, UserMinus, X } from "lucide-react";
-import { FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
+import { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
 
 import { syncAvatar } from "../lib/avatar";
 import { ask } from "../lib/confirm";
@@ -8,6 +8,7 @@ import { api, avatarUrl, errorCode, errorText, forgetServer, Member, Role, RoomI
 import { EndReason, Peer, ScreenShare, useVoice, voice } from "../lib/voice";
 import { AvatarDialog, removeAvatar } from "./AvatarDialog";
 import { ChannelChat } from "./ChannelChat";
+import { DirectPeer, ServerChatPanel } from "./ServerChatPanel";
 import { DeleteDialog } from "./DeleteDialog";
 import {
   HangUpIcon,
@@ -258,6 +259,27 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
   const [error, setError] = useState("");
   const [shareBusy, setShareBusy] = useState(false);
   const [chatRoom, setChatRoom] = useState<{ id: string; name: string } | null>(null);
+  const [directPeer, setDirectPeer] = useState<DirectPeer | null>(null);
+  const [chatOpen, setChatOpen] = useState(() => localStorage.getItem("voicy.chat.open") !== "false");
+  const [chatWidth, setChatWidth] = useState(() => {
+    const stored = Number(localStorage.getItem("voicy.chat.width"));
+    return Number.isFinite(stored) && stored >= 240 && stored <= 700 ? stored : 300;
+  });
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { localStorage.setItem("voicy.chat.open", String(chatOpen)); }, [chatOpen]);
+  useEffect(() => { localStorage.setItem("voicy.chat.width", String(chatWidth)); }, [chatWidth]);
+
+  function resizeChat(event: ReactPointerEvent<HTMLDivElement>) {
+    const rect = contentRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setChatWidth(Math.round(Math.max(240, Math.min(rect.width - 280, rect.right - event.clientX - 4))));
+  }
+
+  function openDirect(id: string, nickname: string) {
+    setDirectPeer({ id, nickname });
+    setChatOpen(true);
+  }
 
   const handleError = useCallback((e: unknown) => {
     const code = errorCode(e);
@@ -477,6 +499,9 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
     <div className="server">
       <header className="server-head">
         <h1>{name}</h1>
+        <button className={`btn pill chat-toggle${chatOpen ? " active" : ""}`} onClick={() => setChatOpen((open) => !open)} aria-label={chatOpen ? "Закрыть чат" : "Открыть чат"} title={chatOpen ? "Закрыть чат" : "Открыть чат"}>
+          <MessageCircle size={16} /> Чат
+        </button>
         {RANK[role] >= RANK.admin && (
           <button className="btn primary pill" onClick={() => setDialog("invite")}>
             <PlusIcon size={14} /> Пригласить
@@ -506,7 +531,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
         </div>
       </header>
 
-      <div className="server-content">
+      <div ref={contentRef} className={`server-content${chatOpen ? "" : " chat-closed"}`} style={{ "--chat-width": `${chatWidth}px` } as CSSProperties}>
       <section className="list">
         {here && v.endReason && !connected && <div className="notice">{END_TEXT[v.endReason]}</div>}
         {error && <div className="error">{error}</div>}
@@ -558,7 +583,10 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
                         key={p.identity}
                         peer={{ ...p, role: m?.role ?? p.role }}
                         avatar={avatarFor(p.identity)}
-                        actions={m && canManage(m) ? memberActions(m) : undefined}
+                        actions={!p.isLocal ? <>
+                          <button className="icon-btn sm dm-btn" onClick={(e) => { e.stopPropagation(); openDirect(p.identity, p.name); }} title={`Написать ${p.name}`} aria-label={`Написать ${p.name}`}><MessageCircle size={15} /></button>
+                          {m && canManage(m) && memberActions(m)}
+                        </> : undefined}
                         onClick={p.isLocal ? () => setMeMenu(!meMenu) : undefined}
                         onGrab={canMove || p.isLocal ? (e) => grab(e, { id: p.identity, name: p.name, from: r.id }) : undefined}
                       >
@@ -574,6 +602,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
                     >
                       <Avatar className="av sm" id={p.id} name={p.name} src={avatarFor(p.id)} />
                       <div className="name">{p.name}</div>
+                      {p.id !== server.member_id && <button className="icon-btn sm dm-btn" onClick={() => openDirect(p.id, p.name)} title={`Написать ${p.name}`} aria-label={`Написать ${p.name}`}><MessageCircle size={15} /></button>}
                       <RoleBadge role={byId.get(p.id)?.role} />
                     </div>
                   ))}
@@ -598,6 +627,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
                   {m.nickname}
                   {m.id === server.member_id && <span style={{ color: "var(--faint)" }}> · ты</span>}
                 </div>
+                {!self && <button className="icon-btn sm dm-btn" onClick={(e) => { e.stopPropagation(); openDirect(m.id, m.nickname); }} title={`Написать ${m.nickname}`} aria-label={`Написать ${m.nickname}`}><MessageCircle size={15} /></button>}
                 {canManage(m) && memberActions(m)}
                 <RoleBadge role={m.role} />
                 {self && meMenu && meMenuPop()}
@@ -607,7 +637,13 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
           </>
         )}
       </section>
-      <ChannelChat host={server.host} memberId={server.member_id} />
+      {chatOpen && <>
+        <div className="chat-resizer" role="separator" aria-label="Изменить ширину чата" aria-orientation="vertical" aria-valuemin={240} aria-valuemax={700} aria-valuenow={chatWidth} tabIndex={0}
+          onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); }}
+          onPointerMove={(e) => { if (e.currentTarget.hasPointerCapture(e.pointerId)) resizeChat(e); }}
+          onKeyDown={(e) => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); setChatWidth((width) => Math.max(240, Math.min(700, width + (e.key === "ArrowLeft" ? 20 : -20)))); } }} />
+        <ServerChatPanel host={server.host} memberId={server.member_id} members={members} peer={directPeer} onPeer={setDirectPeer} onClose={() => setChatOpen(false)} />
+      </>}
       </div>
 
       <footer className="dock-wrap">
