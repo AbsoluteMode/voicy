@@ -1,0 +1,35 @@
+// Toadstools in the grass at the bottom left, one more up top.
+name: Грибы
+order: 100
+$cap: #ff5a4e
+$capshade: #c43b33
+$stem: #f5e6c8
+$spot: #fff4e6
+$grass: #6cc56a
+$moss: #4fae57
+$spark: #e8ffd6
+---
+<define name="mushroom" params="s=1">
+  <g transform="translate({x} {y}) scale({s})">
+    <path d="M-3.5 0C-4 -5 -3 -9 -2.5 -11H2.5C3 -9 4 -5 3.5 0Q0 1.5 -3.5 0Z" fill="$stem" outline="{2.4/s}"/>
+    <path d="M-12 -10C-11 -19 -5 -23 0 -23C5 -23 11 -19 12 -10Q0 -6 -12 -10Z" fill="$cap" outline="{2.4/s}"/>
+    <path d="M-11 -11Q0 -8 11 -11" fill="none" stroke="$capshade" stroke-width="{1.6/s}"/>
+    <circle cx="-5" cy="-16" r="2.4" fill="$spot"/>
+    <circle cx="4" cy="-18" r="1.8" fill="$spot"/>
+    <circle cx="6.5" cy="-12.5" r="1.4" fill="$spot"/>
+  </g>
+</define>
+
+<g anim="sway">
+  <path d="M2 96Q0 84 4 76Q6 86 8 94Z" fill="$grass" outline/>
+  <path d="M44 116Q46 104 52 98Q50 108 50 116Z" fill="$grass" outline/>
+  <path d="M36 116Q30 108 30 100Q36 106 40 114Z" fill="$grass" outline/>
+</g>
+<mushroom x="16" y="106" s="1.35"/>
+<mushroom x="37" y="115" s=".85"/>
+<path d="M4 110Q20 112 50 118" fill="none" stroke="$moss" stroke-width="3" stroke-linecap="round" opacity=".9"/>
+<glint x="10" y="70" r="2.6" delay=".5" color="$spark"/>
+<glint x="48" y="98" r="2.2" delay="1.3" color="$spark"/>
+<g transform="translate(103 22) rotate(25)">
+  <mushroom x="0" y="0" s=".8"/>
+</g>

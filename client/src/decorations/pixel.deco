@@ -1,0 +1,33 @@
+// Health from an old game over the head; the empty heart blinks.
+name: Пиксели
+order: 110
+$heart: #ff4d5e
+$shine: #ffd0d6
+$empty: #3a3a44
+$gold: #ffd84d
+$cyan: #8cf0ff
+---
+<define name="heart" params="fill=$heart light=$shine">
+  <pixels x="{x}" y="{y}" fill="{fill}" light="{light}">
+    .XX.XX.
+    XoXXXXX
+    XXXXXXX
+    .XXXXX.
+    ..XXX..
+    ...X...
+  </pixels>
+</define>
+
+<heart x="30" y="1"/>
+<heart x="51" y="1"/>
+<g anim="blink"><heart x="72" y="1" fill="$empty" light="$empty"/></g>
+<pixels x="104" y="36" fill="$gold">
+  .X.
+  XXX
+  .X.
+</pixels>
+<pixels x="8" y="92" fill="$cyan">
+  .X.
+  XXX
+  .X.
+</pixels>

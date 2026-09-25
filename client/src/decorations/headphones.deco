@@ -1,0 +1,22 @@
+// Voicy's own: a headset in the member's color. The waves at the top are
+// the voice, they show only while the owner talks.
+name: Наушники
+order: 10
+$band: #2b2b33
+$me: #c6f36b
+---
+<define name="cup">
+  <rect x="14" y="58" width="7" height="24" rx="3.5" fill="$band" outline/>
+  <rect x="1.5" y="54" width="16" height="32" rx="7.5" fill="$me" outline/>
+  <path d="M7 62v16M11.5 62v16" stroke="$ink" stroke-width="2.2" stroke-linecap="round"/>
+</define>
+
+<band d="M9.5 62A51 51 0 0 1 110.5 62" color="$band" width="7"/>
+<path d="M9.5 62A51 51 0 0 1 110.5 62" pathLength="100" stroke-dasharray="0 30 40 30"
+      fill="none" stroke="$me" stroke-width="2" stroke-linecap="round"/>
+<pair><cup/></pair>
+
+<pair class="voice" fill="none" stroke="$me" stroke-width="2.6" stroke-linecap="round">
+  <path d="M23 24a9 9 0 0 0 -6 -6"/>
+  <path d="M20 30a16 16 0 0 0 -11 -11"/>
+</pair>

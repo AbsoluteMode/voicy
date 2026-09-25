@@ -1,0 +1,19 @@
+// A halo over the head and two small wings at the sides.
+name: Ангел
+order: 50
+$gold: #ffd84d
+$shine: #fff6c2
+$feather: #fbfbff
+$vein: #c9c9da
+---
+<g anim="bob" class="halo">
+  <ellipse cx="60" cy="8" rx="28" ry="6.5" fill="none" stroke="$ink" stroke-width="9.8"/>
+  <ellipse cx="60" cy="8" rx="28" ry="6.5" fill="none" stroke="$gold" stroke-width="5"/>
+  <path d="M37 6.5Q60 -1 83 6.5" fill="none" stroke="$shine" stroke-width="1.5" stroke-linecap="round"/>
+</g>
+<pair>
+  <g transform="translate(19 52) scale(1.5) translate(-19 -52)"><g anim="flap-l">
+    <path d="M19 47C11 41 3 43 4 50C1 54 3 59 8 59C5 64 9 68 14 65C18 62 21 56 19 47Z" fill="$feather" outline/>
+    <path d="M8 54C11 53 14 52 17 50M11 62C13 60 16 58 18 55" fill="none" stroke="$vein" stroke-width="1.6" stroke-linecap="round"/>
+  </g></g>
+</pair>

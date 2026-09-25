@@ -14,9 +14,10 @@ use serde_json::{json, Value};
 use crate::{
     auth::{hash, random_secret, AuthMember},
     avatar, diag,
-    db::{now, Invite, Member, Redeem, Role},
+    db::{now, Invite, Member, Profile, Redeem, Role, UploadKind},
     error::{ApiError, ApiResult},
     livekit::ECHO_SUFFIX,
+    profile,
     rooms::{layout, parse_room, room_id, RoomPeer, RoomView},
     SharedState,
 };
@@ -30,6 +31,11 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/join", post(join))
         .route("/api/me", get(me).patch(update_me).delete(leave))
         .route("/api/me/avatar", put(set_avatar).delete(clear_avatar))
+        .route("/api/me/profile", put(set_profile))
+        .route("/api/me/decoration", put(set_decoration).delete(clear_decoration))
+        .route("/api/decorations/{id}", get(decoration))
+        .route("/api/me/font", put(set_font).delete(clear_font))
+        .route("/api/fonts/{id}", get(font))
         .route("/api/avatars/{id}", get(avatar))
         .route("/api/token", post(token))
         .route("/api/rooms", get(rooms))
@@ -119,46 +125,141 @@ async fn update_me(
 }
 
 #[derive(Deserialize)]
-struct AvatarReq {
+struct UploadReq {
     /// The image file, base64.
     data: String,
+}
+
+/// Checks and stores an uploaded file; returns its version.
+fn store_upload(s: &SharedState, kind: UploadKind, m: &Member, req: UploadReq) -> ApiResult<String> {
+    let (max, big) = match kind {
+        UploadKind::Avatar => (avatar::MAX_BYTES, "avatar is too large"),
+        UploadKind::Decoration => (profile::DECORATION_MAX_BYTES, "decoration is too large"),
+        UploadKind::Font => (profile::FONT_MAX_BYTES, "font is too large"),
+    };
+    let data = STANDARD
+        .decode(req.data.trim())
+        .map_err(|_| ApiError::BadRequest("file must be base64"))?;
+    if data.len() > max {
+        return Err(ApiError::BadRequest(big));
+    }
+    let mime = match kind {
+        UploadKind::Font => profile::sniff_font(&data).ok_or(ApiError::BadRequest("font must be TTF, OTF, WOFF or WOFF2"))?,
+        _ => avatar::sniff(&data).ok_or(ApiError::BadRequest("image must be a PNG, JPEG, WebP or GIF"))?,
+    };
+    let version = avatar::version(&data);
+    s.db.set_upload(kind, &m.id, &version, mime, &data)?;
+    Ok(version)
 }
 
 async fn set_avatar(
     State(s): State<SharedState>,
     AuthMember(mut m): AuthMember,
-    Json(req): Json<AvatarReq>,
+    Json(req): Json<UploadReq>,
 ) -> ApiResult<Json<Member>> {
-    let data = STANDARD
-        .decode(req.data.trim())
-        .map_err(|_| ApiError::BadRequest("avatar must be base64"))?;
-    if data.len() > avatar::MAX_BYTES {
-        return Err(ApiError::BadRequest("avatar is too large"));
-    }
-    let mime = avatar::sniff(&data).ok_or(ApiError::BadRequest("avatar must be a PNG, JPEG, WebP or GIF image"))?;
-    let version = avatar::version(&data);
-    s.db.set_avatar(&m.id, &version, mime, &data)?;
-    m.avatar = Some(version);
+    m.avatar = Some(store_upload(&s, UploadKind::Avatar, &m, req)?);
     Ok(Json(m))
 }
 
 async fn clear_avatar(State(s): State<SharedState>, AuthMember(mut m): AuthMember) -> ApiResult<Json<Member>> {
-    s.db.clear_avatar(&m.id)?;
+    s.db.clear_upload(UploadKind::Avatar, &m.id)?;
     m.avatar = None;
     Ok(Json(m))
 }
 
-/// Public, so the app can show it with a plain `<img>`: member ids are
-/// random and only other members see them. Versioned URLs never change.
+async fn set_decoration(
+    State(s): State<SharedState>,
+    AuthMember(mut m): AuthMember,
+    Json(req): Json<UploadReq>,
+) -> ApiResult<Json<Member>> {
+    m.decoration_file = Some(store_upload(&s, UploadKind::Decoration, &m, req)?);
+    push_metadata(&s, &m).await;
+    Ok(Json(m))
+}
+
+async fn clear_decoration(State(s): State<SharedState>, AuthMember(mut m): AuthMember) -> ApiResult<Json<Member>> {
+    s.db.clear_upload(UploadKind::Decoration, &m.id)?;
+    m.decoration_file = None;
+    push_metadata(&s, &m).await;
+    Ok(Json(m))
+}
+
+async fn set_font(
+    State(s): State<SharedState>,
+    AuthMember(mut m): AuthMember,
+    Json(req): Json<UploadReq>,
+) -> ApiResult<Json<Member>> {
+    m.font_file = Some(store_upload(&s, UploadKind::Font, &m, req)?);
+    push_metadata(&s, &m).await;
+    Ok(Json(m))
+}
+
+async fn clear_font(State(s): State<SharedState>, AuthMember(mut m): AuthMember) -> ApiResult<Json<Member>> {
+    s.db.clear_upload(UploadKind::Font, &m.id)?;
+    m.font_file = None;
+    push_metadata(&s, &m).await;
+    Ok(Json(m))
+}
+
+async fn set_profile(
+    State(s): State<SharedState>,
+    AuthMember(mut m): AuthMember,
+    Json(req): Json<Profile>,
+) -> ApiResult<Json<Member>> {
+    m.profile = profile::clean(req).map_err(ApiError::BadRequest)?.at(now());
+    s.db.set_profile(&m.id, &m.profile)?;
+    push_metadata(&s, &m).await;
+    Ok(Json(m))
+}
+
+/// What everyone in a room knows about a participant without asking the
+/// server: role and profile. Set in the join token, then kept current.
+fn metadata(m: &Member) -> String {
+    let mut v = serde_json::to_value(&m.profile).unwrap_or_else(|_| json!({}));
+    v["role"] = json!(m.role);
+    v["decoration_file"] = json!(m.decoration_file);
+    v["font_file"] = json!(m.font_file);
+    v.to_string()
+}
+
+/// Updates a member's metadata in the rooms they are in right now.
+async fn push_metadata(s: &SharedState, m: &Member) {
+    let metadata = metadata(m);
+    let (lk, id, metadata) = (&s.lk, &m.id, &metadata);
+    each_room(s, "update metadata", |room| async move {
+        if lk.list_participants(&room).await?.iter().any(|(p, _)| p == id) {
+            lk.update_metadata(&room, id, metadata).await?;
+        }
+        Ok(())
+    })
+    .await;
+}
+
 async fn avatar(State(s): State<SharedState>, Path(id): Path<String>) -> ApiResult<Response> {
+    serve_upload(&s, UploadKind::Avatar, &id)
+}
+
+async fn decoration(State(s): State<SharedState>, Path(id): Path<String>) -> ApiResult<Response> {
+    serve_upload(&s, UploadKind::Decoration, &id)
+}
+
+async fn font(State(s): State<SharedState>, Path(id): Path<String>) -> ApiResult<Response> {
+    serve_upload(&s, UploadKind::Font, &id)
+}
+
+/// Public, so the app can show it with a plain `<img>` or `FontFace`:
+/// member ids are random and only other members see them. Versioned URLs
+/// never change. Fonts load only with CORS, hence the open origin.
+fn serve_upload(s: &SharedState, kind: UploadKind, id: &str) -> ApiResult<Response> {
     if s.db.is_deleted()? {
         return Err(ApiError::Gone);
     }
-    let a = s.db.avatar(&id)?.ok_or(ApiError::NotFound)?;
+    let a = s.db.upload(kind, id)?.ok_or(ApiError::NotFound)?;
     let headers = [
         (header::CONTENT_TYPE, a.mime),
         (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_owned()),
         (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+        (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_owned()),
     ];
     Ok((headers, a.data).into_response())
 }
@@ -195,8 +296,7 @@ async fn token(
     let token = if req.echo {
         s.lk.echo_token(&room, &m.id)?
     } else {
-        let metadata = json!({ "role": m.role }).to_string();
-        s.lk.join_token(&room, &m.id, &m.nickname, metadata)?
+        s.lk.join_token(&room, &m.id, &m.nickname, metadata(&m))?
     };
     Ok(Json(json!({ "url": s.cfg.livekit_url(), "room": room, "token": token })))
 }
@@ -389,9 +489,7 @@ async fn set_role(
     s.db.set_role(&target.id, req.role)?;
     target.role = req.role;
     // Tokens carry the role as metadata; update it for a live session too.
-    let metadata = json!({ "role": target.role }).to_string();
-    let (lk, id, metadata) = (&s.lk, &target.id, &metadata);
-    each_room(&s, "update the role", |room| async move { lk.update_metadata(&room, id, metadata).await }).await;
+    push_metadata(&s, &target).await;
     Ok(Json(target))
 }
 

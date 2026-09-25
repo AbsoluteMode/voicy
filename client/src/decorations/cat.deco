@@ -1,0 +1,13 @@
+// Cat ears in the member's color, rooted on the rim, twitching now and then.
+name: Ушки
+order: 30
+$me: #f1e4d3
+$inner: #ffb3c8
+---
+<pair>
+  <g anim="twitch">
+    <path d="M@(-60,50) C12 24 11 8 @(-36,74) C26 1 40 5 @(-12,50) A50 50 0 0 0 @(-60,50)Z" fill="$me" outline/>
+    <blob points="@(-53,55) @(-37,69) @(-20,55) @(-36,57)" fill="$inner"/>
+    <path d="M22 26l5 2M27 21l4 3" stroke="$ink" stroke-width="1.4" stroke-linecap="round" opacity=".5"/>
+  </g>
+</pair>

@@ -1,0 +1,28 @@
+// Dead inside, the quiet one: red spider lilies at the rim.
+name: 1000-7
+order: 150
+$red: #e5484d
+$deep: #a3242d
+$stem: #3f5a3a
+---
+<!-- Six thin petals curling back, long stamens between them. -->
+<define name="lily" params="s=1">
+  <g transform="translate({x} {y}) scale({s})">
+    <ring n="6" around="0 0" turn="15">
+      <path d="M0 0 C-2 -6 -3.4 -12 0.6 -16.5 C2.8 -18.6 6.4 -17.4 5.2 -14.2 C3.4 -15.2 1.4 -13.2 1.8 -9 C2.1 -5.2 1.6 -2 0 0Z"
+            fill="$red" outline="{2.4/s}"/>
+    </ring>
+    <ring n="6" around="0 0" turn="45">
+      <path d="M0 0 Q3.5 -10 -0.5 -20" fill="none" stroke="$ink" stroke-width="{3.6/s}" stroke-linecap="round"/>
+      <path d="M0 0 Q3.5 -10 -0.5 -20" fill="none" stroke="$red" stroke-width="{1.2/s}" stroke-linecap="round"/>
+      <circle cx="-0.5" cy="-20.5" r="1.5" fill="$deep" outline="{1.4/s}"/>
+    </ring>
+    <circle r="2.6" fill="$deep" outline="{2/s}"/>
+  </g>
+</define>
+
+<band d="M98 96 C102 106 100 114 94 120" color="$stem" width="2.6"/>
+<g anim="sway">
+  <lily x="98" y="96" s="1.25"/>
+</g>
+<lily x="112" y="72" s=".62"/>

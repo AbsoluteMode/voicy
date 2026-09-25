@@ -1,0 +1,35 @@
+// A cherry branch along the lower left of the rim, petals falling off it.
+name: Сакура
+order: 70
+$bark: #5a3a2e
+$petal: #ffc6d9
+$heart: #ff6f9a
+---
+<!-- Five petals with one outline around all of them, a notch in each tip. -->
+<define name="blossom" params="turn=0">
+  <sticker>
+    <ring n="5" around="{x} {y}" turn="{turn}">
+      <ellipse cx="{x}" cy="{y - r * 0.52}" rx="{r * 0.38}" ry="{r * 0.52}" fill="$petal"/>
+    </ring>
+  </sticker>
+  <ring n="5" around="{x} {y}" turn="{turn}">
+    <path d="M{x} {y - r}l{r * 0.1} {r * 0.14}l{-r * 0.2} 0Z" fill="$ink"/>
+  </ring>
+  <circle cx="{x}" cy="{y}" r="{r * 0.3}" fill="$heart"/>
+  <circle cx="{x}" cy="{y}" r="{r * 0.1}" fill="$ink"/>
+</define>
+
+<band d="M5 58A55 55 0 0 0 44 113" color="$bark" width="3.6"/>
+<band d="M12 86Q4 90 2 98" color="$bark" width="2.4"/>
+<g anim="sway">
+  <blossom x="7" y="71" r="11" turn="10"/>
+  <blossom x="19" y="97" r="13.5" turn="-8"/>
+  <blossom x="42" y="110" r="9" turn="20"/>
+  <blossom x="3" y="99" r="6.5"/>
+</g>
+<band d="M102 30Q108 22 114 21" color="$bark" width="2.4"/>
+<blossom x="104" y="19" r="10" turn="30"/>
+<g fill="$petal" stroke="$ink" stroke-width="1.4">
+  <ellipse anim="fall" cx="30" cy="84" rx="2.2" ry="3.2"/>
+  <ellipse anim="fall" delay="1.2" cx="46" cy="96" rx="1.8" ry="2.7"/>
+</g>

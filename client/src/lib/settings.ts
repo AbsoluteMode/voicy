@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 
 import type { LocalAvatar } from "./avatar";
 import type { NoiseMode } from "./noise";
+import type { Profile } from "./tauri";
 
 export interface AudioSettings {
   inputDevice: string;
@@ -20,6 +21,11 @@ export interface AudioSettings {
    * removes it everywhere.
    */
   avatar?: LocalAvatar | null;
+  /** Name style, status and decoration, pushed to every server like the avatar; `undefined` until set here. */
+  profile?: Profile;
+  /** Our own decoration image and name font, kept like `avatar`. */
+  decorationFile?: LocalAvatar | null;
+  fontFile?: LocalAvatar | null;
   /** Global shortcuts in accelerator form ("Ctrl+Shift+KeyM"); null = unset. */
   hotkeys: Hotkeys;
   /** Push-to-talk mode: the mic is live only while the ptt key is held. */

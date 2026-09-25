@@ -7,6 +7,7 @@ mod error;
 mod invite_page;
 mod livekit;
 mod presence;
+mod profile;
 mod rooms;
 
 use std::{env, net::SocketAddr, sync::Arc};

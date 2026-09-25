@@ -49,6 +49,49 @@ pub struct Member {
     pub created_at: i64,
     /// Version of the member's picture, for `/api/avatars/{id}?v=<version>`.
     pub avatar: Option<String>,
+    /// Version of their own decoration image, for `/api/decorations/{id}?v=<version>`;
+    /// shown when `profile.decoration` is "custom".
+    pub decoration_file: Option<String>,
+    /// Version of their own name font, for `/api/fonts/{id}?v=<version>`;
+    /// used when `profile.font` is "custom".
+    pub font_file: Option<String>,
+    #[serde(flatten)]
+    pub profile: Profile,
+}
+
+/// What a member shows besides the name and picture. All of it optional,
+/// so an empty profile and a server without profiles look the same.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Profile {
+    /// Name color, `#rrggbb`; also the glow while they talk.
+    pub color: Option<String>,
+    /// Second name color, for the effects that use two.
+    pub color2: Option<String>,
+    /// Name font: one the app ships, "g:<family>" from Google Fonts, or
+    /// "custom" for `font_file`. Then the effect (gradient, neon…).
+    pub font: Option<String>,
+    pub effect: Option<String>,
+    /// A line under the name: "afk", "playing dota".
+    pub status: Option<String>,
+    /// When the status stops showing, unix seconds; `None` keeps it.
+    pub status_until: Option<i64>,
+    /// Decoration over the picture: one the app ships, or "custom" for
+    /// `decoration_file`. The app owns the lists of fonts, effects and
+    /// decorations, so new ones need no server update; unknown ones show
+    /// as the default.
+    pub decoration: Option<String>,
+}
+
+impl Profile {
+    /// Without a status that has run out.
+    pub fn at(mut self, now: i64) -> Self {
+        if self.status_until.is_some_and(|until| until <= now) {
+            self.status = None;
+            self.status_until = None;
+        }
+        self
+    }
 }
 
 impl Member {
@@ -62,14 +105,47 @@ impl Member {
             secret_hash: r.get("secret_hash")?,
             created_at: r.get("created_at")?,
             avatar: r.get("avatar")?,
+            decoration_file: r.get("decoration_file")?,
+            font_file: r.get("font_file")?,
+            profile: Profile {
+                color: r.get("color")?,
+                color2: r.get("color2")?,
+                font: r.get("font")?,
+                effect: r.get("effect")?,
+                status: r.get("status")?,
+                status_until: r.get("status_until")?,
+                decoration: r.get("decoration")?,
+            }
+            .at(now()),
         })
     }
 }
 
-/// Members joined with their avatar version, the shape `Member::from_row` reads.
-const MEMBER_SELECT: &str = "SELECT m.*, a.version AS avatar FROM members m LEFT JOIN avatars a ON a.member_id = m.id";
+/// Members joined with their picture versions and profile, the shape `Member::from_row` reads.
+const MEMBER_SELECT: &str = "SELECT m.*, a.version AS avatar, d.version AS decoration_file, f.version AS font_file,
+    p.color, p.color2, p.font, p.effect, p.status, p.status_until, p.decoration
+    FROM members m LEFT JOIN avatars a ON a.member_id = m.id LEFT JOIN decorations d ON d.member_id = m.id
+    LEFT JOIN fonts f ON f.member_id = m.id LEFT JOIN profiles p ON p.member_id = m.id";
 
-pub struct Avatar {
+/// Files a member uploads, each kept like the avatar: one of a kind per member.
+#[derive(Clone, Copy, Debug)]
+pub enum UploadKind {
+    Avatar,
+    Decoration,
+    Font,
+}
+
+impl UploadKind {
+    fn table(self) -> &'static str {
+        match self {
+            UploadKind::Avatar => "avatars",
+            UploadKind::Decoration => "decorations",
+            UploadKind::Font => "fonts",
+        }
+    }
+}
+
+pub struct Upload {
     pub mime: String,
     pub data: Vec<u8>,
 }
@@ -119,6 +195,28 @@ CREATE TABLE IF NOT EXISTS avatars (
     version   TEXT NOT NULL,
     mime      TEXT NOT NULL,
     data      BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS decorations (
+    member_id TEXT PRIMARY KEY REFERENCES members(id) ON DELETE CASCADE,
+    version   TEXT NOT NULL,
+    mime      TEXT NOT NULL,
+    data      BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS fonts (
+    member_id TEXT PRIMARY KEY REFERENCES members(id) ON DELETE CASCADE,
+    version   TEXT NOT NULL,
+    mime      TEXT NOT NULL,
+    data      BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS profiles (
+    member_id    TEXT PRIMARY KEY REFERENCES members(id) ON DELETE CASCADE,
+    color        TEXT,
+    color2       TEXT,
+    font         TEXT,
+    effect       TEXT,
+    status       TEXT,
+    status_until INTEGER,
+    decoration   TEXT
 );
 ";
 
@@ -211,6 +309,9 @@ impl Db {
             secret_hash: secret_hash.to_owned(),
             created_at: now,
             avatar: None,
+            decoration_file: None,
+            font_file: None,
+            profile: Profile::default(),
         };
         tx.execute(
             "INSERT INTO members (id, nickname, role, secret_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -250,26 +351,35 @@ impl Db {
         Ok(())
     }
 
-    pub fn set_avatar(&self, id: &str, version: &str, mime: &str, data: &[u8]) -> Result<()> {
+    pub fn set_upload(&self, kind: UploadKind, id: &str, version: &str, mime: &str, data: &[u8]) -> Result<()> {
         self.conn().execute(
-            "INSERT OR REPLACE INTO avatars (member_id, version, mime, data) VALUES (?1, ?2, ?3, ?4)",
+            &format!("INSERT OR REPLACE INTO {} (member_id, version, mime, data) VALUES (?1, ?2, ?3, ?4)", kind.table()),
             params![id, version, mime, data],
         )?;
         Ok(())
     }
 
-    pub fn clear_avatar(&self, id: &str) -> Result<()> {
-        self.conn().execute("DELETE FROM avatars WHERE member_id = ?1", [id])?;
+    pub fn clear_upload(&self, kind: UploadKind, id: &str) -> Result<()> {
+        self.conn().execute(&format!("DELETE FROM {} WHERE member_id = ?1", kind.table()), [id])?;
         Ok(())
     }
 
-    pub fn avatar(&self, id: &str) -> Result<Option<Avatar>> {
+    pub fn upload(&self, kind: UploadKind, id: &str) -> Result<Option<Upload>> {
         Ok(self
             .conn()
-            .query_row("SELECT mime, data FROM avatars WHERE member_id = ?1", [id], |r| {
-                Ok(Avatar { mime: r.get(0)?, data: r.get(1)? })
+            .query_row(&format!("SELECT mime, data FROM {} WHERE member_id = ?1", kind.table()), [id], |r| {
+                Ok(Upload { mime: r.get(0)?, data: r.get(1)? })
             })
             .optional()?)
+    }
+
+    pub fn set_profile(&self, id: &str, p: &Profile) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR REPLACE INTO profiles (member_id, color, color2, font, effect, status, status_until, decoration)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![id, p.color, p.color2, p.font, p.effect, p.status, p.status_until, p.decoration],
+        )?;
+        Ok(())
     }
 
     pub fn delete_member(&self, id: &str) -> Result<()> {
@@ -327,6 +437,9 @@ impl Db {
         let tx = conn.transaction()?;
         tx.execute_batch(
             "DELETE FROM avatars;
+             DELETE FROM decorations;
+             DELETE FROM fonts;
+             DELETE FROM profiles;
              DELETE FROM members;
              DELETE FROM invites;
              INSERT OR REPLACE INTO meta (key, value) VALUES ('deleted', '1');",
@@ -397,16 +510,50 @@ mod tests {
     }
 
     #[test]
-    fn avatars_follow_their_member() {
+    fn uploads_follow_their_member() {
         let db = db();
         db.ensure_owner_invite("code", 0).unwrap();
         let Redeem::Ok(m) = db.redeem_invite("code", "izzy", "s", 1).unwrap() else { panic!() };
         assert_eq!(db.member(&m.id).unwrap().unwrap().avatar, None);
-        db.set_avatar(&m.id, "v1", "image/webp", b"a").unwrap();
-        db.set_avatar(&m.id, "v2", "image/png", b"b").unwrap();
-        assert_eq!(db.members().unwrap()[0].avatar.as_deref(), Some("v2"));
-        assert_eq!(db.avatar(&m.id).unwrap().unwrap().mime, "image/png");
+        db.set_upload(UploadKind::Avatar, &m.id, "v1", "image/webp", b"a").unwrap();
+        db.set_upload(UploadKind::Avatar, &m.id, "v2", "image/png", b"b").unwrap();
+        db.set_upload(UploadKind::Decoration, &m.id, "d1", "image/gif", b"c").unwrap();
+        let listed = &db.members().unwrap()[0];
+        assert_eq!((listed.avatar.as_deref(), listed.decoration_file.as_deref()), (Some("v2"), Some("d1")));
+        assert_eq!(db.upload(UploadKind::Avatar, &m.id).unwrap().unwrap().mime, "image/png");
+        db.clear_upload(UploadKind::Decoration, &m.id).unwrap();
+        assert_eq!(db.member(&m.id).unwrap().unwrap().decoration_file, None);
+        db.set_upload(UploadKind::Decoration, &m.id, "d2", "image/png", b"d").unwrap();
+        db.set_upload(UploadKind::Font, &m.id, "f1", "font/woff2", b"e").unwrap();
+        assert_eq!(db.member(&m.id).unwrap().unwrap().font_file.as_deref(), Some("f1"));
         db.delete_member(&m.id).unwrap();
-        assert!(db.avatar(&m.id).unwrap().is_none());
+        assert!(db.upload(UploadKind::Font, &m.id).unwrap().is_none());
+        assert!(db.upload(UploadKind::Avatar, &m.id).unwrap().is_none());
+        assert!(db.upload(UploadKind::Decoration, &m.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn profiles_follow_their_member_and_statuses_run_out() {
+        let db = db();
+        db.ensure_owner_invite("code", 0).unwrap();
+        let Redeem::Ok(m) = db.redeem_invite("code", "izzy", "s", 1).unwrap() else { panic!() };
+        assert_eq!(db.member(&m.id).unwrap().unwrap().profile, Profile::default());
+        let p = Profile {
+            color: Some("#ff8800".into()),
+            color2: Some("#00ff88".into()),
+            font: Some("caveat".into()),
+            effect: Some("gradient".into()),
+            status: Some("afk".into()),
+            status_until: Some(now() + 3600),
+            decoration: Some("crown".into()),
+        };
+        db.set_profile(&m.id, &p).unwrap();
+        assert_eq!(db.members().unwrap()[0].profile, p);
+        db.set_profile(&m.id, &Profile { status_until: Some(now() - 1), ..p.clone() }).unwrap();
+        let shown = db.member(&m.id).unwrap().unwrap().profile;
+        assert_eq!(shown, Profile { status: None, status_until: None, ..p });
+        db.delete_member(&m.id).unwrap();
+        let left: i64 = db.conn().query_row("SELECT COUNT(*) FROM profiles", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0);
     }
 }

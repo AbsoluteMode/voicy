@@ -1,0 +1,12 @@
+// A ring of level bars that is the voice: each bar grows with --level at
+// its own gain (from --i, see .eqbar in styles.css).
+name: Эквалайзер
+order: 20
+$me: #c6f36b
+---
+<ring n="36" stroke-linecap="round">
+  <g class="eqbar">
+    <line x1="60" y1="7" x2="60" y2="0" stroke="$ink" stroke-width="7.8"/>
+    <line x1="60" y1="7" x2="60" y2="0" stroke="$me" stroke-width="3"/>
+  </g>
+</ring>

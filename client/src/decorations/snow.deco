@@ -1,0 +1,29 @@
+// A cap of snow on the head, dripping over the rim, flakes falling past.
+name: Зима
+order: 130
+$snow: #f7fbff
+$shadow: #cfe3f5
+---
+<define name="flake" params="delay=0">
+  <g anim="fall" delay="{delay}">
+    <ring n="3" around="{x} {y}">
+      <path d="M{x} {y - r}V{y + r}" stroke="$ink" stroke-width="4.4" stroke-linecap="round"/>
+    </ring>
+    <ring n="3" around="{x} {y}">
+      <path d="M{x} {y - r}V{y + r}" stroke="$snow" stroke-width="1.6" stroke-linecap="round"/>
+    </ring>
+  </g>
+</define>
+
+<!-- Outer edge above the rim, inner edge inside it with three drips. -->
+<blob fill="$snow" outline points="
+  @(-78,58.5) @(-60,57) @(-40,58.5) @(-20,57) @(0,58.5) @(20,57) @(40,58.5) @(60,57) @(78,58.5)
+  @(78,44) @(66,44) @(58,39.5) @(46,44) @(34,44) @(24,37) @(10,44)
+  @(-4,44) @(-16,44) @(-28,37) @(-40,44) @(-52,44) @(-62,39.5) @(-74,44)"/>
+<blob fill="none" stroke="$shadow" stroke-width="2.2" opacity=".9" points="
+  @(-60,52) @(-40,53) @(-20,52) @(0,53) @(20,52) @(40,53) @(60,52)
+  @(58,43) @(46,46) @(24,40) @(0,46) @(-28,40) @(-46,46) @(-58,43)"/>
+<path d="M40 12Q50 8 60 7.5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+<flake x="8" y="70" r="3.2"/>
+<flake x="112" y="82" r="2.6" delay="1.1"/>
+<flake x="104" y="102" r="2" delay=".6"/>
