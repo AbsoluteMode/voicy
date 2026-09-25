@@ -1,0 +1,28 @@
+// A gold crown sitting on the rim, tipped to one side: five points with
+// balls on top, a curved band with a ruby in the middle and two sapphires.
+name: Корона
+order: 40
+$gold: #ffd84d
+$shade: #f0a52e
+$shine: #fff6c2
+$ruby: #ff4d6d
+$sapphire: #5ec4f0
+---
+<g transform="translate(@(28,49)) rotate(26)">
+  <g anim="bob">
+    <!-- Body with the points, then the band over its foot. -->
+    <path d="M-23 -8 L-27 -31 L-14 -19 L-7 -33 L0 -21 L7 -33 L14 -19 L27 -31 L23 -8 Q0 -2 -23 -8Z" fill="$gold" outline/>
+    <path d="M-24 1 Q0 7 24 1 L23 -9 Q0 -3 -23 -9Z" fill="$shade" outline/>
+    <circle cx="-27" cy="-32" r="3.2" fill="$gold" outline="2"/>
+    <circle cx="-7" cy="-34" r="3" fill="$gold" outline="2"/>
+    <circle cx="7" cy="-34" r="3" fill="$gold" outline="2"/>
+    <circle cx="27" cy="-32" r="3.2" fill="$gold" outline="2"/>
+    <path d="M0 -8 L4.5 -3.5 L0 1 L-4.5 -3.5Z" fill="$ruby" outline="1.8"/>
+    <circle cx="-13" cy="-4.5" r="2.4" fill="$sapphire" outline="1.8"/>
+    <circle cx="13" cy="-4.5" r="2.4" fill="$sapphire" outline="1.8"/>
+    <path d="M-19 -12 L-21.5 -24 M-2 -12 L-3 -18" stroke="$shine" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M-1.4 -5.5 L0.6 -6.6" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/>
+  </g>
+  <glint x="-33" y="-38" r="4.5" delay=".3"/>
+  <glint x="31" y="-12" r="3" delay="1.1"/>
+</g>

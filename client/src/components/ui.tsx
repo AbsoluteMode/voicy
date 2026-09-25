@@ -1,8 +1,11 @@
 import { AlertTriangle, Crown, Headphones, HelpCircle, ShieldCheck, X } from "lucide-react";
-import { ReactNode, useEffect, useState } from "react";
+import { CSSProperties, ReactNode, useEffect, useRef, useState } from "react";
 
 import { answer, usePendingAsk } from "../lib/confirm";
-import { Role } from "../lib/tauri";
+import { fontCss } from "../lib/fonts";
+import { styleOf } from "../lib/profile";
+import { decorationById } from "../lib/decorations";
+import { Profile, Role } from "../lib/tauri";
 
 export type Tone = "accent" | "danger" | "neutral";
 
@@ -123,14 +126,99 @@ export function RoleBadge({ role, size = 15 }: { role?: Role; size?: number }) {
   );
 }
 
-/** A member's picture, or their initials on a color of their own (grey when `plain`). */
-export function Avatar(props: { id: string; name: string; src?: string | null; className: string; plain?: boolean; children?: ReactNode }) {
+type Vars = CSSProperties & Record<`--${string}`, string>;
+
+/**
+ * An image that may move. With `still` a canvas with its first frame
+ * covers it, and CSS lifts the cover while its owner talks or on hover.
+ */
+function MaybeMoving({ src, still, onError }: { src: string; still?: boolean; onError?: () => void }) {
+  const poster = useRef<HTMLCanvasElement>(null);
+  return (
+    <>
+      <img
+        src={src}
+        alt=""
+        draggable={false}
+        onError={onError}
+        onLoad={(e) => {
+          // Drawn when the picture arrives, so the first frame; a still one
+          // looks the same either way. Cross-origin only taints the canvas.
+          const c = poster.current;
+          if (!c) return;
+          const k = Math.min(1, 288 / Math.max(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight));
+          c.width = Math.round(e.currentTarget.naturalWidth * k);
+          c.height = Math.round(e.currentTarget.naturalHeight * k);
+          c.getContext("2d")?.drawImage(e.currentTarget, 0, 0, c.width, c.height);
+        }}
+      />
+      {still && <canvas ref={poster} aria-hidden />}
+    </>
+  );
+}
+
+/** Art over the avatar, Discord's way: a square 1.2 times its size. */
+function Decoration({ id, src, still }: { id: string | null; src?: string | null; still?: boolean }) {
+  if (id === "custom") return src ? <div className="deco own"><MaybeMoving src={src} still={still} /></div> : null;
+  const deco = decorationById(id);
+  if (!deco) return null;
+  return (
+    // The markup comes from our own .deco files, parsed at start-up.
+    <svg className={`deco d-${deco.id}`} viewBox="0 0 120 120" aria-hidden dangerouslySetInnerHTML={{ __html: deco.svg }} />
+  );
+}
+
+/**
+ * A member's picture, or their initials on a color of their own (grey when
+ * `plain`), under their decoration. With `still` an animated picture and
+ * the decoration hold still until the row is hovered or the class says
+ * `speaking`. `decoration` is the URL of their own decoration image.
+ */
+export function Avatar(props: {
+  id: string;
+  name: string;
+  src?: string | null;
+  profile?: Profile;
+  decoration?: string | null;
+  className: string;
+  plain?: boolean;
+  still?: boolean;
+  children?: ReactNode;
+}) {
   const [broken, setBroken] = useState(false);
   useEffect(() => setBroken(false), [props.src]);
+  const look = styleOf(props.profile);
+  const style: Vars = {};
+  if (!props.plain) style.background = colorFor(props.id);
+  if (look.color) style["--c1"] = look.color;
   return (
-    <div className={props.className} style={props.plain ? undefined : { background: colorFor(props.id) }}>
-      {props.src && !broken ? <img src={props.src} alt="" draggable={false} onError={() => setBroken(true)} /> : initials(props.name)}
+    <div className={`${props.className}${props.still ? " still" : ""}`} style={style}>
+      {props.src && !broken ? <MaybeMoving src={props.src} still={props.still} onError={() => setBroken(true)} /> : initials(props.name)}
+      <Decoration id={look.decoration} src={props.decoration} still={props.still} />
       {props.children}
     </div>
+  );
+}
+
+/**
+ * A name in the member's font, colors and effect, like Discord's name
+ * styles. `font` is the URL of their own font file, if they use one.
+ */
+export function Nick({ name, profile, font, className }: { name: string; profile?: Profile; font?: string | null; className?: string }) {
+  const look = styleOf(profile);
+  const css = fontCss(look.font, font);
+  const style: Vars = {};
+  if (look.color) style["--c1"] = look.color;
+  if (look.color2) style["--c2"] = look.color2;
+  if (css) {
+    style.fontFamily = css.family;
+    if (css.weight) style.fontWeight = css.weight;
+    style["--k"] = String(css.k);
+  }
+  const cls = ["nick", className, look.effect && `fx-${look.effect}`, look.color && "tinted"];
+  return (
+    <span className={cls.filter(Boolean).join(" ")} style={style}>
+      {name}
+    </span>
   );
 }

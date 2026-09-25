@@ -1,24 +1,32 @@
 import { Crop as CropIcon, Search } from "lucide-react";
 import { FormEvent, PointerEvent, useEffect, useRef, useState } from "react";
 
-import { Crop, renderAvatar, syncAvatarEverywhere } from "../lib/avatar";
+import { Crop, isAnimated, renderAnimatedAvatar, renderAvatar, syncAvatarEverywhere } from "../lib/avatar";
 import { updateSettings } from "../lib/settings";
 import { errorText, Pin, pinterestImage, pinterestSearch } from "../lib/tauri";
 import { Modal } from "./ui";
 
 const IDEAS = ["аниме аватарки", "котики", "aesthetic pfp", "капибара", "мемные аватарки", "y2k pfp"];
 
+/** The picture being framed: its bytes for animation, a URL to show it. */
+interface Source {
+  blob: Blob;
+  url: string;
+}
+
+const sourceOf = (blob: Blob): Source => ({ blob, url: URL.createObjectURL(blob) });
+
 /**
  * Frames a picture in a circle and saves it as our avatar. With `file` it
  * starts at framing that file; without, it first searches Pinterest.
  */
 export function AvatarDialog({ file, onClose }: { file?: File; onClose: () => void }) {
-  const [source, setSource] = useState<string | null>(() => (file ? URL.createObjectURL(file) : null));
+  const [source, setSource] = useState<Source | null>(() => (file ? sourceOf(file) : null));
   // Object URLs hold the whole image in memory until revoked.
-  useEffect(() => () => void (source && URL.revokeObjectURL(source)), [source]);
+  useEffect(() => () => void (source && URL.revokeObjectURL(source.url)), [source]);
 
-  if (source) return <CropStep src={source} back={file ? "Отмена" : "Назад"} onBack={file ? onClose : () => setSource(null)} onDone={onClose} />;
-  return <PickStep onPicked={setSource} onClose={onClose} />;
+  if (source) return <CropStep source={source} back={file ? "Отмена" : "Назад"} onBack={file ? onClose : () => setSource(null)} onDone={onClose} />;
+  return <PickStep onPicked={(blob) => setSource(sourceOf(blob))} onClose={onClose} />;
 }
 
 /** Removes our avatar here and on every server. */
@@ -27,7 +35,7 @@ export function removeAvatar() {
   void syncAvatarEverywhere();
 }
 
-function PickStep({ onPicked, onClose }: { onPicked: (url: string) => void; onClose: () => void }) {
+function PickStep({ onPicked, onClose }: { onPicked: (blob: Blob) => void; onClose: () => void }) {
   const [query, setQuery] = useState(() => IDEAS[Math.floor(Math.random() * IDEAS.length)]);
   const [searched, setSearched] = useState("");
   const [pins, setPins] = useState<Pin[]>([]);
@@ -72,7 +80,7 @@ function PickStep({ onPicked, onClose }: { onPicked: (url: string) => void; onCl
     setError("");
     try {
       const bytes = await pinterestImage(pin.full);
-      onPicked(URL.createObjectURL(new Blob([bytes])));
+      onPicked(new Blob([bytes]));
     } catch (e) {
       setError(errorText(e));
       setOpening(null);
@@ -131,8 +139,16 @@ const MAX_ZOOM = 5;
 // The preview circle is as big as a person in a call (34 px).
 const PREVIEW_K = 34 / VIEW;
 
-function CropStep({ src, back, onBack, onDone }: { src: string; back: string; onBack: () => void; onDone: () => void }) {
+function CropStep({ source, back, onBack, onDone }: { source: Source; back: string; onBack: () => void; onDone: () => void }) {
+  const src = source.url;
   const img = useRef<HTMLImageElement>(null);
+  // GIFs and moving WebPs stay animated; known a moment after opening.
+  const [animated, setAnimated] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void isAnimated(source.blob).then((yes) => live && setAnimated(yes));
+    return () => void (live = false);
+  }, [source.blob]);
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   // Center of the visible square, in image pixels.
@@ -172,7 +188,8 @@ function CropStep({ src, back, onBack, onDone }: { src: string; back: string; on
     setError("");
     try {
       const crop: Crop = { x: center.x - side / 2, y: center.y - side / 2, size: side };
-      updateSettings({ avatar: await renderAvatar(img.current, crop) });
+      const avatar = animated ? await renderAnimatedAvatar(source.blob, crop) : await renderAvatar(img.current, crop);
+      updateSettings({ avatar });
       void syncAvatarEverywhere();
       onDone();
     } catch (e) {
@@ -182,7 +199,12 @@ function CropStep({ src, back, onBack, onDone }: { src: string; back: string; on
   }
 
   return (
-    <Modal title="Кадрируем" icon={<CropIcon size={20} />} sub="Двигай картинку и приближай колёсиком: сохранится то, что в круге." onClose={onBack}>
+    <Modal
+      title="Кадрируем"
+      icon={<CropIcon size={20} />}
+      sub={`Двигай картинку и приближай колёсиком: сохранится то, что в круге.${animated ? " Анимация сохранится, у друзей она оживает, когда ты говоришь." : ""}`}
+      onClose={onBack}
+    >
       <div className="crop-wrap">
         <div
           className="cropper"
@@ -249,7 +271,7 @@ function CropStep({ src, back, onBack, onDone }: { src: string; back: string; on
       <div className="foot">
         <button type="button" className="btn" onClick={onBack}>{back}</button>
         <button type="button" className="btn primary" disabled={!size || busy} onClick={() => void save()}>
-          Сохранить
+          {busy && animated ? "Собираю гифку…" : "Сохранить"}
         </button>
       </div>
     </Modal>

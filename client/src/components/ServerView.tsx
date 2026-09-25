@@ -1,10 +1,11 @@
-import { ImagePlus, LogOut, Maximize2, Pencil, Search, Shield, ShieldOff, Trash2, Upload, UserMinus } from "lucide-react";
+import { ImagePlus, LogOut, Maximize2, Pencil, Search, Shield, ShieldOff, Sparkles, Trash2, Upload, UserMinus } from "lucide-react";
 import { FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
 
-import { syncAvatar } from "../lib/avatar";
+import { syncAvatar, syncPicture } from "../lib/avatar";
 import { ask } from "../lib/confirm";
+import { statusOf, syncProfile } from "../lib/profile";
 import { updateSettings, useSettings } from "../lib/settings";
-import { api, avatarUrl, errorCode, errorText, forgetServer, Member, Role, RoomInfo, SavedServer } from "../lib/tauri";
+import { api, avatarUrl, decorationUrl, errorCode, errorText, fontUrl, forgetServer, Member, Profile, Role, RoomInfo, SavedServer } from "../lib/tauri";
 import { EndReason, Peer, ScreenShare, useVoice, voice } from "../lib/voice";
 import { AvatarDialog, removeAvatar } from "./AvatarDialog";
 import { DeleteDialog } from "./DeleteDialog";
@@ -21,8 +22,9 @@ import {
   SlidersIcon,
 } from "./icons";
 import { InviteDialog } from "./InviteDialog";
+import { ProfileDialog } from "./ProfileDialog";
 import { SettingsDialog } from "./SettingsDialog";
-import { Avatar, Modal, RoleBadge } from "./ui";
+import { Avatar, Modal, Nick, RoleBadge } from "./ui";
 
 const RANK: Record<Role, number> = { member: 0, admin: 1, owner: 2 };
 
@@ -105,10 +107,11 @@ function ScreenTile({ screen }: { screen: ScreenShare }) {
 }
 
 /**
- * Opens under our own row: "change avatar", then a file or Pinterest.
- * Clicks on the row itself are left to the row, which toggles the menu.
+ * Opens under our own row: "change avatar", then a file or Pinterest; or
+ * the rest of the profile. Clicks on the row itself are left to the row,
+ * which toggles the menu.
  */
-function MeMenu(props: { onClose: () => void; onFile: (f: File) => void; onPinterest: () => void; onNickname: () => void }) {
+function MeMenu(props: { onClose: () => void; onFile: (f: File) => void; onPinterest: () => void; onNickname: () => void; onProfile: () => void }) {
   const { onClose, onFile, onPinterest } = props;
   const s = useSettings();
   const [choosing, setChoosing] = useState(false);
@@ -133,6 +136,9 @@ function MeMenu(props: { onClose: () => void; onFile: (f: File) => void; onPinte
           </button>
           <button onClick={props.onNickname}>
             <Pencil size={16} /> Изменить ник
+          </button>
+          <button onClick={props.onProfile}>
+            <Sparkles size={16} /> Оформление профиля
           </button>
         </>
       ) : (
@@ -170,6 +176,18 @@ function MeMenu(props: { onClose: () => void; onFile: (f: File) => void; onPinte
   );
 }
 
+/** A name in the one-line rows, in its color, with the status after it. */
+function MemberName({ name, profile, font, self }: { name: string; profile?: Profile; font?: string | null; self?: boolean }) {
+  const status = statusOf(profile);
+  return (
+    <div className="name">
+      <Nick name={name} profile={profile} font={font} />
+      {self && <span className="me"> · ты</span>}
+      {status && <span className="status" title={status}>{status}</span>}
+    </div>
+  );
+}
+
 /**
  * One person in the call. Volume lives under the mouse wheel (right click
  * resets it) and is only shown when it is not 100% or while changing it.
@@ -178,12 +196,17 @@ function MeMenu(props: { onClose: () => void; onFile: (f: File) => void; onPinte
 function PeerRow(props: {
   peer: Peer;
   avatar: string | null;
+  profile?: Profile;
+  decoration?: string | null;
+  /** URL of their own name font. */
+  font?: string | null;
   actions?: ReactNode;
   onClick?: () => void;
   onGrab?: (e: ReactPointerEvent) => void;
   children?: ReactNode;
 }) {
   const { peer, actions } = props;
+  const status = statusOf(props.profile);
   const level = useVoiceLevel<HTMLDivElement>(peer.identity);
   const settings = useSettings();
   const volume = settings.volumes[peer.identity] ?? 1;
@@ -216,15 +239,16 @@ function PeerRow(props: {
         e.preventDefault();
         setVolume(1);
       }}
-      title={peer.isLocal ? (props.onClick ? "Нажми, чтобы сменить аватар" : undefined) : `Громкость ${Math.round(volume * 100)}% · колесо мыши — изменить, правый клик — сбросить`}
+      title={peer.isLocal ? (props.onClick ? "Нажми, чтобы изменить профиль" : undefined) : `Громкость ${Math.round(volume * 100)}% · колесо мыши — изменить, правый клик — сбросить`}
     >
-      <Avatar className={`av${peer.speaking ? " speaking" : ""}`} id={peer.identity} name={peer.name} src={props.avatar} />
+      <Avatar className={`av${peer.speaking ? " speaking" : ""}`} id={peer.identity} name={peer.name} src={props.avatar} profile={props.profile} decoration={props.decoration} still />
       <div className="who">
         <div className="name">
-          <span className="txt">{peer.name}</span>
+          <Nick className="txt" name={peer.name} profile={props.profile} font={props.font} />
           {peer.isLocal && <span className="me">ты</span>}
           <SignalBars q={peer.quality} />
         </div>
+        {status && <div className="status" title={status}>{status}</div>}
       </div>
       {actions}
       <RoleBadge role={peer.role} />
@@ -251,7 +275,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
   const [role, setRole] = useState<Role>(server.role);
   const [name, setName] = useState(server.name);
   const [fatal, setFatal] = useState<"unauthorized" | "gone" | null>(null);
-  const [dialog, setDialog] = useState<null | "invite" | "settings" | "delete" | "rename" | "avatar" | "nick">(null);
+  const [dialog, setDialog] = useState<null | "invite" | "settings" | "delete" | "rename" | "avatar" | "nick" | "profile">(null);
   const [meMenu, setMeMenu] = useState(false);
   const closeMeMenu = useCallback(() => setMeMenu(false), []);
   // Set when the avatar comes from disk: the dialog starts at framing it.
@@ -274,8 +298,9 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
         api<{ name: string }>(server.host, "GET", "/api/info"),
       ]);
       setRole(me.role);
-      // A picture chosen while this server was offline, or on first visit.
-      setMembers((await syncAvatar(server.host, me)) ? await api<Member[]>(server.host, "GET", "/api/members") : list);
+      // A picture or profile chosen while this server was offline, or on first visit.
+      const synced = await Promise.all([syncAvatar(server.host, me), syncPicture(server.host, me, "decoration"), syncPicture(server.host, me, "font"), syncProfile(server.host, me)]);
+      setMembers(synced.some(Boolean) ? await api<Member[]>(server.host, "GET", "/api/members") : list);
       setName(info.name);
       // The backend refreshed its cache from these; update the sidebar.
       if (me.role !== server.role || me.nickname !== server.nickname || info.name !== server.name) onChanged();
@@ -313,6 +338,22 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
     if (id === server.member_id && settings.avatar !== undefined) return settings.avatar?.url ?? null;
     const version = byId.get(id)?.avatar;
     return version ? avatarUrl(server.host, id, version) : null;
+  };
+  // Ours from here too; people in our room from their live metadata, which
+  // changes the moment they save; the rest from the member list.
+  const profileFor = (id: string, live?: Profile): Profile | undefined => {
+    if (id === server.member_id && settings.profile !== undefined) return settings.profile;
+    return live ?? byId.get(id);
+  };
+  const decorationFor = (id: string, live?: Profile) => {
+    if (id === server.member_id && settings.decorationFile !== undefined) return settings.decorationFile?.url ?? null;
+    const version = live?.decoration_file ?? byId.get(id)?.decoration_file;
+    return version ? decorationUrl(server.host, id, version) : null;
+  };
+  const fontFor = (id: string, live?: Profile) => {
+    if (id === server.member_id && settings.fontFile !== undefined) return settings.fontFile?.url ?? null;
+    const version = live?.font_file ?? byId.get(id)?.font_file;
+    return version ? fontUrl(server.host, id, version) : null;
   };
 
   useEffect(() => {
@@ -567,6 +608,9 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
                         key={p.identity}
                         peer={{ ...p, role: m?.role ?? p.role }}
                         avatar={avatarFor(p.identity)}
+                        profile={profileFor(p.identity, p.profile)}
+                        decoration={decorationFor(p.identity, p.profile)}
+                        font={fontFor(p.identity, p.profile)}
                         actions={m && canManage(m) ? memberActions(m) : undefined}
                         onClick={p.isLocal ? () => setMeMenu(!meMenu) : undefined}
                         onGrab={canMove || p.isLocal ? (e) => grab(e, { id: p.identity, name: p.name, from: r.id }) : undefined}
@@ -581,8 +625,8 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
                       key={p.id}
                       onPointerDown={canMove || p.id === server.member_id ? (e) => grab(e, { id: p.id, name: p.name, from: r.id }) : undefined}
                     >
-                      <Avatar className="av sm" id={p.id} name={p.name} src={avatarFor(p.id)} />
-                      <div className="name">{p.name}</div>
+                      <Avatar className="av sm" id={p.id} name={p.name} src={avatarFor(p.id)} profile={profileFor(p.id)} decoration={decorationFor(p.id)} still />
+                      <MemberName name={p.name} profile={profileFor(p.id)} font={fontFor(p.id)} />
                       <RoleBadge role={byId.get(p.id)?.role} />
                     </div>
                   ))}
@@ -603,15 +647,21 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
                 className={`mrow${self ? " self" : ""}`}
                 key={m.id}
                 onClick={self ? () => setMeMenu(!meMenu) : undefined}
-                title={self ? "Нажми, чтобы сменить аватар или ник" : undefined}
+                title={self ? "Нажми, чтобы изменить профиль" : undefined}
               >
-                <Avatar className={`av ${online ? "sm" : "off"}`} id={m.id} name={m.nickname} src={avatarFor(m.id)} plain={!online}>
+                <Avatar
+                  className={`av ${online ? "sm" : "off"}`}
+                  id={m.id}
+                  name={m.nickname}
+                  src={avatarFor(m.id)}
+                  profile={profileFor(m.id)}
+                  decoration={decorationFor(m.id)}
+                  plain={!online}
+                  still
+                >
                   {online && <i className="online-dot" />}
                 </Avatar>
-                <div className="name">
-                  {m.nickname}
-                  {m.id === server.member_id && <span style={{ color: "var(--faint)" }}> · ты</span>}
-                </div>
+                <MemberName name={m.nickname} profile={profileFor(m.id)} font={fontFor(m.id)} self={self} />
                 {canManage(m) && memberActions(m)}
                 <RoleBadge role={m.role} />
                 {self && meMenu && meMenuPop()}
@@ -668,7 +718,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
 
       {drag && (
         <div className="drag-ghost" style={{ left: drag.x, top: drag.y }}>
-          <Avatar className="av" id={drag.id} name={drag.name} src={avatarFor(drag.id)} />
+          <Avatar className="av" id={drag.id} name={drag.name} src={avatarFor(drag.id)} profile={profileFor(drag.id)} decoration={decorationFor(drag.id)} />
           {drag.name}
         </div>
       )}
@@ -676,6 +726,17 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
       {dialog === "invite" && <InviteDialog host={server.host} onClose={() => setDialog(null)} />}
       {dialog === "settings" && <SettingsDialog onClose={() => setDialog(null)} />}
       {dialog === "avatar" && <AvatarDialog file={avatarFile} onClose={() => setDialog(null)} />}
+      {dialog === "profile" && (
+        <ProfileDialog
+          id={server.member_id}
+          name={byId.get(server.member_id)?.nickname ?? server.nickname}
+          avatar={avatarFor(server.member_id)}
+          decoration={decorationFor(server.member_id)}
+          font={fontFor(server.member_id)}
+          profile={profileFor(server.member_id)}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog === "delete" && <DeleteDialog server={server} onClose={() => setDialog(null)} onDeleted={forget} />}
       {dialog === "nick" && (
         <NicknameDialog
@@ -713,7 +774,11 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
       setMeMenu(false);
       setDialog("nick");
     };
-    return <MeMenu onClose={closeMeMenu} onFile={open} onPinterest={() => open()} onNickname={nick} />;
+    const profile = () => {
+      setMeMenu(false);
+      setDialog("profile");
+    };
+    return <MeMenu onClose={closeMeMenu} onFile={open} onPinterest={() => open()} onNickname={nick} onProfile={profile} />;
   }
 
   function memberActions(m: Member) {

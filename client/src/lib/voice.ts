@@ -22,7 +22,7 @@ import { flushLogs, log, logTo } from "./log";
 import { DFN_MAX_REALTIME_FACTOR, dfnRealtimeFactor, VoicyNoiseProcessor, watchTrack } from "./noise";
 import { SCREEN_CAPTURE, SCREEN_PUBLISH } from "./screen";
 import { getSettings } from "./settings";
-import { api, Role } from "./tauri";
+import { api, Profile, Role } from "./tauri";
 
 export type ConnState = "idle" | "connecting" | "connected" | "reconnecting";
 
@@ -33,6 +33,8 @@ export interface Peer {
   identity: string;
   name: string;
   role?: Role;
+  /** From the participant's metadata; `undefined` on servers that do not send it. */
+  profile?: Profile;
   isLocal: boolean;
   speaking: boolean;
   muted: boolean;
@@ -228,11 +230,14 @@ function cue(kind: keyof typeof CUES, callCtx?: AudioContext | null) {
   }
 }
 
-function roleOf(p: Participant): Role | undefined {
+/** Role and profile the server put in the participant's metadata. */
+function metaOf(p: Participant): { role?: Role; profile?: Profile } {
   try {
-    return p.metadata ? (JSON.parse(p.metadata).role as Role) : undefined;
+    if (!p.metadata) return {};
+    const { role, ...rest } = JSON.parse(p.metadata);
+    return { role, profile: "decoration" in rest ? (rest as Profile) : undefined };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -266,7 +271,7 @@ class VoiceSession {
     const peers = all.map((p) => ({
       identity: p.identity,
       name: p.name || p.identity,
-      role: roleOf(p),
+      ...metaOf(p),
       isLocal: p === room.localParticipant,
       speaking: this.speaking.has(p.identity),
       muted: !p.isMicrophoneEnabled,

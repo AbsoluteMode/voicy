@@ -10,7 +10,29 @@ export interface SavedServer {
   role: Role;
 }
 
-export interface Member {
+/**
+ * What a member shows besides the name and picture; older servers send
+ * none of it. Ids are from the lists in lib/profile.ts and lib/decorations.ts.
+ */
+export interface Profile {
+  /** Name color, `#rrggbb`; also their glow while talking. */
+  color?: string | null;
+  /** Second name color, for gradient, toon and pop. */
+  color2?: string | null;
+  font?: string | null;
+  effect?: string | null;
+  status?: string | null;
+  /** When the status stops showing, unix seconds. */
+  status_until?: number | null;
+  /** A decoration id, or "custom" for `decoration_file`. */
+  decoration?: string | null;
+  /** Version of their own decoration image, see `decorationUrl`; the server sets it. */
+  decoration_file?: string | null;
+  /** Version of their own name font, see `fontUrl`; used when `font` is "custom". */
+  font_file?: string | null;
+}
+
+export interface Member extends Profile {
   id: string;
   nickname: string;
   role: Role;
@@ -111,6 +133,14 @@ export function uninstallServer(ssh: SshCreds, onLog: (line: string) => void) {
 /** Members' pictures are public by id, so a plain `<img>` can show them. */
 export const avatarUrl = (host: string, memberId: string, version: string) =>
   `https://${host}/api/avatars/${encodeURIComponent(memberId)}?v=${encodeURIComponent(version)}`;
+
+/** A member's own decoration image, public like the avatar. */
+export const decorationUrl = (host: string, memberId: string, version: string) =>
+  `https://${host}/api/decorations/${encodeURIComponent(memberId)}?v=${encodeURIComponent(version)}`;
+
+/** A member's own name font, public and CORS-open so `FontFace` can load it. */
+export const fontUrl = (host: string, memberId: string, version: string) =>
+  `https://${host}/api/fonts/${encodeURIComponent(memberId)}?v=${encodeURIComponent(version)}`;
 
 export interface Pin {
   id: string;

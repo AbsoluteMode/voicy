@@ -1,0 +1,24 @@
+// Two butterflies, the big one in the member's color.
+name: Бабочки
+order: 120
+$me: #8cc8ff
+$gold: #ffd84d
+---
+<define name="wing">
+  <path d="M0 0C-4 -11 -15 -13 -15 -4C-15 2 -7 3 0 0Z" fill="{tint}" outline="{2.4/s}"/>
+  <path d="M0 0C-8 2 -12 10 -6.5 11C-2 11 0 5 0 0Z" fill="{tint}" outline="{2.4/s}"/>
+  <circle cx="-9" cy="-6" r="2.2" fill="$ink"/>
+  <circle cx="-5.5" cy="6" r="1.4" fill="$ink"/>
+</define>
+
+<define name="butterfly" params="delay=0">
+  <g transform="translate({x} {y}) rotate({rot}) scale({s})">
+    <g anim="flap-l" delay="{delay}"><wing/></g>
+    <g anim="flap-r" delay="{delay}"><g transform="scale(-1 1)"><wing/></g></g>
+    <ellipse rx="1.8" ry="7" fill="$ink"/>
+    <path d="M-.5 -6Q-3 -11 -5 -12M.5 -6Q3 -11 5 -12" fill="none" stroke="$ink" stroke-width="{1.2/s}" stroke-linecap="round"/>
+  </g>
+</define>
+
+<butterfly x="97" y="19" s="1.7" rot="18" tint="$me"/>
+<butterfly x="14" y="94" s="1.15" rot="-22" tint="$gold" delay=".25"/>
