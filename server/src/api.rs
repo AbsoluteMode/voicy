@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::{
     auth::{hash, random_secret, AuthMember},
-    avatar,
+    avatar, diag,
     db::{now, Invite, Member, Redeem, Role},
     error::{ApiError, ApiResult},
     livekit::ECHO_SUFFIX,
@@ -38,6 +38,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/dms/{peer}", get(direct_messages).post(send_direct_message))
         .route("/api/rooms/{room}/messages", get(chat_messages).post(send_chat_message))
         .route("/api/members", get(members))
+        .route("/api/ping", post(ping))
         .route("/api/members/{id}/kick", post(kick))
         .route("/api/members/{id}/role", post(set_role))
         .route("/api/members/{id}/move", post(move_member))
@@ -115,6 +116,9 @@ async fn update_me(
 ) -> ApiResult<Json<Member>> {
     m.nickname = clean_nickname(&req.nickname)?;
     s.db.set_nickname(&m.id, &m.nickname)?;
+    // A live session keeps the name from its token; rename it there too.
+    let (lk, id, nick) = (&s.lk, &m.id, &m.nickname);
+    each_room(&s, "rename", |room| async move { lk.update_name(&room, id, nick).await }).await;
     Ok(Json(m))
 }
 
@@ -325,8 +329,28 @@ where
     }
 }
 
-async fn members(State(s): State<SharedState>, _auth: AuthMember) -> ApiResult<Json<Vec<Member>>> {
-    Ok(Json(s.db.members()?))
+#[derive(Serialize)]
+struct MemberView {
+    #[serde(flatten)]
+    member: Member,
+    /// Has Voicy open right now (see `presence`).
+    online: bool,
+}
+
+async fn members(State(s): State<SharedState>, _auth: AuthMember) -> ApiResult<Json<Vec<MemberView>>> {
+    let now = now();
+    let members = s.db.members()?;
+    Ok(Json(
+        members
+            .into_iter()
+            .map(|member| MemberView { online: s.presence.is_online(&member.id, now), member })
+            .collect(),
+    ))
+}
+
+/// Heartbeat from a running app; authenticating is all it takes.
+async fn ping(_auth: AuthMember) -> StatusCode {
+    StatusCode::NO_CONTENT
 }
 
 /// Admins may act on members; the owner may act on everyone else.
@@ -366,11 +390,13 @@ async fn kick(
 struct LogsReq {
     #[serde(default)]
     version: String,
+    /// The app's clock when it sent the batch, ms. Moves every event onto
+    /// the server clock, so events from different apps line up.
+    #[serde(default)]
+    sent_at: Option<i64>,
     entries: Vec<Value>,
 }
 
-/// Per-member diagnostic log files are rotated at this size.
-const LOG_FILE_MAX: u64 = 4 << 20;
 const LOG_BATCH_MAX: usize = 500;
 const LOG_ENTRY_MAX: usize = 4096;
 
@@ -385,26 +411,20 @@ async fn client_logs(
     if req.entries.len() > LOG_BATCH_MAX {
         return Err(ApiError::BadRequest("too many log entries"));
     }
-    let dir = std::path::Path::new(&s.cfg.db_path).with_file_name("logs");
+    let dir = diag::logs_dir(&s.cfg.db_path);
     let version: String = req.version.chars().take(32).collect();
+    let skew = req.sent_at.map(|t| diag::now_ms() - t).filter(|d| d.abs() < 86_400_000);
     let mut out = String::new();
     for entry in req.entries {
-        let line = json!({ "at": now(), "who": m.nickname, "v": version, "e": entry }).to_string();
+        let ts = skew.and_then(|d| Some(entry.get("t")?.as_i64()? + d));
+        let line = json!({ "at": now(), "ts": ts, "who": m.nickname, "v": version, "e": entry }).to_string();
         if line.len() <= LOG_ENTRY_MAX {
             out.push_str(&line);
             out.push('\n');
         }
     }
-    let path = dir.join(format!("{}.log", m.id));
-    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-        use std::io::Write;
-        std::fs::create_dir_all(&dir)?;
-        if std::fs::metadata(&path).map(|md| md.len() > LOG_FILE_MAX).unwrap_or(false) {
-            std::fs::rename(&path, path.with_extension("old.log"))?;
-        }
-        std::fs::OpenOptions::new().create(true).append(true).open(&path)?.write_all(out.as_bytes())
-    })
-    .await??;
+    let name = format!("{}.log", m.id);
+    tokio::task::spawn_blocking(move || diag::append(&dir, &name, &out)).await??;
     Ok(StatusCode::NO_CONTENT)
 }
 

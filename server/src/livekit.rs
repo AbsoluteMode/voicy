@@ -205,6 +205,13 @@ impl LiveKit {
         Ok(())
     }
 
+    /// Renames a connected participant for everyone in the room.
+    pub async fn update_name(&self, room: &str, identity: &str, name: &str) -> Result<()> {
+        self.room_service("UpdateParticipant", room, json!({ "room": room, "identity": identity, "name": name }))
+            .await?;
+        Ok(())
+    }
+
     /// Reliable data message from the server to one participant. Members
     /// cannot publish data, so clients can trust whatever arrives this way.
     pub async fn send_data(&self, room: &str, identity: &str, topic: &str, payload: &Value) -> Result<()> {

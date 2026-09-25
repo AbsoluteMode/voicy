@@ -3,6 +3,8 @@ import { check, Update } from "@tauri-apps/plugin-updater";
 import { useSyncExternalStore } from "react";
 
 import { ask } from "./confirm";
+import { flushLogs } from "./log";
+import { voice } from "./voice";
 
 export type UpdateState =
   | { kind: "idle" }
@@ -54,13 +56,18 @@ export async function installUpdate() {
   let done = 0;
   set({ kind: "installing", percent: null });
   try {
-    await update.downloadAndInstall((e) => {
+    await update.download((e) => {
       if (e.event === "Started") total = e.data.contentLength ?? 0;
       if (e.event === "Progress") {
         done += e.data.chunkLength;
         set({ kind: "installing", percent: total ? Math.round((done / total) * 100) : null });
       }
     });
+    // The installer ends this process: leave the call properly first, or
+    // the server shows us in the room for a while after the restart.
+    await voice.disconnect().catch(() => {});
+    await flushLogs().catch(() => {});
+    await update.install();
     await relaunch();
   } catch (e) {
     // Keep the update on offer so the button can retry.

@@ -115,7 +115,8 @@ function ScreenTile({ screen, track, onLeave }: { screen: ScreenShare; track: No
  * Opens under our own row: "change avatar", then a file or Pinterest.
  * Clicks on the row itself are left to the row, which toggles the menu.
  */
-function MeMenu({ onClose, onFile, onPinterest }: { onClose: () => void; onFile: (f: File) => void; onPinterest: () => void }) {
+function MeMenu(props: { onClose: () => void; onFile: (f: File) => void; onPinterest: () => void; onNickname: () => void }) {
+  const { onClose, onFile, onPinterest } = props;
   const s = useSettings();
   const [choosing, setChoosing] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -133,9 +134,14 @@ function MeMenu({ onClose, onFile, onPinterest }: { onClose: () => void; onFile:
   return (
     <div className="menu-pop me-pop" ref={ref} onClick={(e) => e.stopPropagation()}>
       {!choosing ? (
-        <button onClick={() => setChoosing(true)}>
-          <ImagePlus size={16} /> Изменить аватар
-        </button>
+        <>
+          <button onClick={() => setChoosing(true)}>
+            <ImagePlus size={16} /> Изменить аватар
+          </button>
+          <button onClick={props.onNickname}>
+            <Pencil size={16} /> Изменить ник
+          </button>
+        </>
       ) : (
         <>
           <button onClick={() => file.current?.click()}>
@@ -197,7 +203,7 @@ function MemberMenu({ anchor, onClose, onMessage }: { anchor: HTMLElement; onClo
 /**
  * One person in the call. Volume lives under the mouse wheel (right click
  * resets it) and is only shown when it is not 100% or while changing it.
- * Our own row opens the avatar menu (`children`) on click.
+ * Our own row opens the avatar and nickname menu (`children`) on click.
  */
 function PeerRow(props: {
   peer: Peer;
@@ -275,7 +281,7 @@ export function ServerView({ server, onDirectMessage, onChanged, onRemoved }: { 
   const [role, setRole] = useState<Role>(server.role);
   const [name, setName] = useState(server.name);
   const [fatal, setFatal] = useState<"unauthorized" | "gone" | null>(null);
-  const [dialog, setDialog] = useState<null | "invite" | "settings" | "delete" | "rename" | "avatar">(null);
+  const [dialog, setDialog] = useState<null | "invite" | "settings" | "delete" | "rename" | "avatar" | "nick">(null);
   const [meMenu, setMeMenu] = useState(false);
   const closeMeMenu = useCallback(() => setMeMenu(false), []);
   // Set when the avatar comes from disk: the dialog starts at framing it.
@@ -353,7 +359,7 @@ export function ServerView({ server, onDirectMessage, onChanged, onRemoved }: { 
 
   // Fallback for changes made while this member is not in the room.
   useEffect(() => {
-    const t = setInterval(() => void loadMembers(), 30_000);
+    const t = setInterval(() => void loadMembers(), 15_000);
     return () => clearInterval(t);
   }, [loadMembers]);
 
@@ -394,12 +400,25 @@ export function ServerView({ server, onDirectMessage, onChanged, onRemoved }: { 
     return () => clearTimeout(t);
   }, [myRoom, peerKey, loadRooms]);
 
+  // Where we ourselves are comes from this app's own connection only: the
+  // poll lags behind our moves and still lists a session that just died
+  // (an update restart, a crash) for a while.
+  const others = useMemo(
+    () => rooms.map((r) => ({ ...r, participants: r.participants.filter((p) => p.id !== server.member_id) })),
+    [rooms, server.member_id],
+  );
   const inVoice = useMemo(() => {
-    const ids = new Set(rooms.flatMap((r) => r.participants.map((p) => p.id)));
+    const ids = new Set(others.flatMap((r) => r.participants.map((p) => p.id)));
     if (here) v.peers.forEach((p) => ids.add(p.identity));
+    if (connected) ids.add(server.member_id);
     return ids;
-  }, [rooms, here, v.peers]);
+  }, [others, here, v.peers, connected, server.member_id]);
+  // Not in voice: who has Voicy open first, like Discord.
+  const byName = (a: Member, b: Member) => a.nickname.localeCompare(b.nickname);
   const away = members.filter((m) => !inVoice.has(m.id));
+  const isOnline = (m: Member) => m.id === server.member_id || m.online === true;
+  const awayOnline = away.filter(isOnline).sort(byName);
+  const awayOffline = away.filter((m) => !isOnline(m)).sort(byName);
 
   async function join(roomId: string) {
     setError("");
@@ -413,7 +432,7 @@ export function ServerView({ server, onDirectMessage, onChanged, onRemoved }: { 
 
   /** The dock button: where people already are, else the empty room. */
   const joinBest = () => {
-    const target = rooms.find((r) => r.participants.length > 0) ?? rooms[0];
+    const target = others.find((r) => r.participants.length > 0) ?? others[0];
     if (target) void join(target.id);
   };
 
@@ -585,10 +604,11 @@ export function ServerView({ server, onDirectMessage, onChanged, onRemoved }: { 
           </div>
         )}
 
-        {rooms.map((r) => {
+        {others.map((r) => {
           const mine = r.id === myRoom;
           // Our own room is live from LiveKit; the others come from the poll.
-          const count = mine ? v.peers.length : r.participants.length;
+          const joining = mine && !v.peers.some((p) => p.isLocal);
+          const count = mine ? Math.max(v.peers.length, 1) : r.participants.length;
           return (
             <div key={r.id} data-room={r.id} className={`room${mine ? " mine" : ""}${drag && drag.over === r.id && drag.from !== r.id ? " drop" : ""}`}>
               <div className="room-top">
@@ -605,6 +625,15 @@ export function ServerView({ server, onDirectMessage, onChanged, onRemoved }: { 
                   <MessageCircle size={17} />
                 </button>
               </div>
+              {joining && (
+                <div className="mrow pending">
+                  <Avatar className="av sm" id={server.member_id} name={server.nickname} src={avatarFor(server.member_id)} />
+                  <div className="name">
+                    {server.nickname}
+                    <span className="me"> · подключаюсь…</span>
+                  </div>
+                </div>
+              )}
               {mine
                 ? v.peers.map((p) => {
                     const m = byId.get(p.identity);
@@ -639,19 +668,24 @@ export function ServerView({ server, onDirectMessage, onChanged, onRemoved }: { 
           );
         })}
 
-        {away.length > 0 && (
-          <>
-            <div className="sec-label" style={{ marginTop: 6 }}>Не в голосе · {away.length}</div>
-            {away.map((m) => {
+        {[
+          { list: awayOnline, label: "В сети", online: true },
+          { list: awayOffline, label: "Не в сети", online: false },
+        ].map(({ list, label, online }) => list.length > 0 && (
+          <div key={label} className={`away${online ? " online" : ""}`}>
+            <div className="sec-label" style={{ marginTop: 6 }}>{label} · {list.length}</div>
+            {list.map((m) => {
               const self = m.id === server.member_id;
               return (
               <div
                 className={`mrow${self ? " self" : " member-target"}`}
                 key={m.id}
                 onClick={(e) => { if ((e.target as HTMLElement).closest("button, .menu-pop")) return; if (self) setMeMenu(!meMenu); else toggleMemberMenu(m.id, m.nickname, e.currentTarget); }}
-                title={self ? "Нажми, чтобы сменить аватар" : undefined}
+                title={self ? "Нажми, чтобы сменить аватар или ник" : undefined}
               >
-                <Avatar className="av off" id={m.id} name={m.nickname} src={avatarFor(m.id)} plain />
+                <Avatar className={`av ${online ? "sm" : "off"}`} id={m.id} name={m.nickname} src={avatarFor(m.id)} plain={!online}>
+                  {online && <i className="online-dot" />}
+                </Avatar>
                 <div className="name">
                   {m.nickname}
                   {m.id === server.member_id && <span style={{ color: "var(--faint)" }}> · ты</span>}
@@ -663,8 +697,8 @@ export function ServerView({ server, onDirectMessage, onChanged, onRemoved }: { 
               </div>
               );
             })}
-          </>
-        )}
+          </div>
+        ))}
       </section>
       {chatOpen && <>
         <div className="chat-resizer" role="separator" aria-label="Изменить ширину чата" aria-orientation="vertical" aria-valuemin={240} aria-valuemax={700} aria-valuenow={chatWidth} tabIndex={0}
@@ -730,6 +764,17 @@ export function ServerView({ server, onDirectMessage, onChanged, onRemoved }: { 
       {dialog === "settings" && <SettingsDialog onClose={() => setDialog(null)} />}
       {dialog === "avatar" && <AvatarDialog file={avatarFile} onClose={() => setDialog(null)} />}
       {dialog === "delete" && <DeleteDialog server={server} onClose={() => setDialog(null)} onDeleted={forget} />}
+      {dialog === "nick" && (
+        <NicknameDialog
+          host={server.host}
+          current={members.find((m) => m.id === server.member_id)?.nickname ?? server.nickname}
+          onClose={() => setDialog(null)}
+          onSaved={() => {
+            setDialog(null);
+            void loadMembers();
+          }}
+        />
+      )}
       {dialog === "rename" && (
         <RenameDialog
           host={server.host}
@@ -754,7 +799,11 @@ export function ServerView({ server, onDirectMessage, onChanged, onRemoved }: { 
       setAvatarFile(file);
       setDialog("avatar");
     };
-    return <MeMenu onClose={closeMeMenu} onFile={open} onPinterest={() => open()} />;
+    const nick = () => {
+      setMeMenu(false);
+      setDialog("nick");
+    };
+    return <MeMenu onClose={closeMeMenu} onFile={open} onPinterest={() => open()} onNickname={nick} />;
   }
 
   function memberActions(m: Member) {
@@ -808,6 +857,39 @@ function RenameDialog(props: { host: string; current: string; onClose: () => voi
         <label className="field">
           <span>Как назовём?</span>
           <input type="text" autoFocus maxLength={48} value={value} onChange={(e) => setValue(e.target.value)} />
+        </label>
+        {error && <div className="error">{error}</div>}
+        <div className="foot">
+          <button type="button" className="btn" onClick={props.onClose}>Отмена</button>
+          <button className="btn primary" disabled={busy || !value.trim() || value.trim() === props.current}>Сохранить</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/** Nickname on this server; everyone sees it change, also mid-call. */
+function NicknameDialog(props: { host: string; current: string; onClose: () => void; onSaved: () => void }) {
+  const [value, setValue] = useState(props.current);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api(props.host, "PATCH", "/api/me", { nickname: value.trim() });
+      props.onSaved();
+    } catch (err) {
+      setError(errorText(err));
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title="Твой ник" icon={<Pencil size={20} />} onClose={props.onClose}>
+      <form onSubmit={save}>
+        <label className="field">
+          <input type="text" autoFocus maxLength={32} aria-label="Ник" value={value} onChange={(e) => setValue(e.target.value)} />
         </label>
         {error && <div className="error">{error}</div>}
         <div className="foot">
