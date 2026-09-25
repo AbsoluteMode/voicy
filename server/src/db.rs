@@ -6,6 +6,7 @@ use std::{
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
@@ -90,6 +91,7 @@ pub struct ChatMessage {
     pub nickname: String,
     pub text: String,
     pub created_at: i64,
+    pub attachment: Option<AttachmentMeta>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -99,6 +101,27 @@ pub struct DirectMessage {
     pub nickname: String,
     pub text: String,
     pub created_at: i64,
+    pub attachment: Option<AttachmentMeta>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AttachmentMeta {
+    pub id: String,
+    pub name: String,
+    pub mime: String,
+    pub size: i64,
+}
+
+pub struct NewAttachment {
+    pub name: String,
+    pub mime: String,
+    pub data: Vec<u8>,
+}
+
+pub struct StoredAttachment {
+    pub name: String,
+    pub mime: String,
+    pub data: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -168,10 +191,38 @@ CREATE TABLE IF NOT EXISTS direct_messages (
 );
 CREATE INDEX IF NOT EXISTS direct_messages_sender_id ON direct_messages(sender_id, id);
 CREATE INDEX IF NOT EXISTS direct_messages_recipient_id ON direct_messages(recipient_id, id);
+CREATE TABLE IF NOT EXISTS attachments (
+    id                TEXT PRIMARY KEY,
+    chat_message_id   INTEGER UNIQUE REFERENCES chat_messages(id) ON DELETE CASCADE,
+    direct_message_id INTEGER UNIQUE REFERENCES direct_messages(id) ON DELETE CASCADE,
+    name              TEXT NOT NULL,
+    mime              TEXT NOT NULL,
+    data              BLOB NOT NULL,
+    CHECK ((chat_message_id IS NOT NULL) != (direct_message_id IS NOT NULL))
+);
 ";
 
 /// `created_by` of an owner invite made by a redeploy while an owner exists.
 const RECOVERY: &str = "ssh-recovery";
+
+fn attachment_from_row(row: &Row, offset: usize) -> rusqlite::Result<Option<AttachmentMeta>> {
+    let Some(id) = row.get(offset)? else { return Ok(None) };
+    Ok(Some(AttachmentMeta {
+        id,
+        name: row.get(offset + 1)?,
+        mime: row.get(offset + 2)?,
+        size: row.get(offset + 3)?,
+    }))
+}
+
+fn save_attachment(tx: &rusqlite::Transaction<'_>, chat_id: Option<i64>, direct_id: Option<i64>, a: &NewAttachment) -> Result<AttachmentMeta> {
+    let id = Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO attachments (id, chat_message_id, direct_message_id, name, mime, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![&id, chat_id, direct_id, &a.name, &a.mime, &a.data],
+    )?;
+    Ok(AttachmentMeta { id, name: a.name.clone(), mime: a.mime.clone(), size: a.data.len() as i64 })
+}
 
 impl Db {
     pub fn open(path: &str) -> Result<Self> {
@@ -187,49 +238,54 @@ impl Db {
     pub fn chat_messages(&self, room: &str, after: i64) -> Result<Vec<ChatMessage>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, room, member_id, nickname, text, created_at FROM
-             (SELECT id, room, member_id, nickname, text, created_at FROM chat_messages
-              WHERE room = ?1 AND id > ?2 ORDER BY id DESC LIMIT 100)
-             ORDER BY id ASC",
+            "SELECT c.id, c.room, c.member_id, c.nickname, c.text, c.created_at,
+                    a.id, a.name, a.mime, length(a.data)
+             FROM (SELECT * FROM chat_messages WHERE room = ?1 AND id > ?2 ORDER BY id DESC LIMIT 100) c
+             LEFT JOIN attachments a ON a.chat_message_id = c.id ORDER BY c.id ASC",
         )?;
         let rows = stmt.query_map(params![room, after], |r| {
             Ok(ChatMessage {
                 id: r.get(0)?, room: r.get(1)?, member_id: r.get(2)?,
-                nickname: r.get(3)?, text: r.get(4)?, created_at: r.get(5)?,
+                nickname: r.get(3)?, text: r.get(4)?, created_at: r.get(5)?, attachment: attachment_from_row(r, 6)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    pub fn add_chat_message(&self, room: &str, member: &Member, text: &str) -> Result<ChatMessage> {
-        let conn = self.conn();
+    pub fn add_chat_message(&self, room: &str, member: &Member, text: &str, file: Option<&NewAttachment>) -> Result<ChatMessage> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
         let created_at = now();
-        conn.execute(
+        tx.execute(
             "INSERT INTO chat_messages (room, member_id, nickname, text, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![room, member.id, member.nickname, text, created_at],
         )?;
-        let id = conn.last_insert_rowid();
-        conn.execute(
+        let id = tx.last_insert_rowid();
+        let attachment = file.map(|a| save_attachment(&tx, Some(id), None, a)).transpose()?;
+        tx.execute(
             "DELETE FROM chat_messages WHERE room = ?1 AND id <=
              COALESCE((SELECT id FROM chat_messages WHERE room = ?1 ORDER BY id DESC LIMIT 1 OFFSET 999), 0) - 1",
             [room],
         )?;
+        tx.commit()?;
         Ok(ChatMessage {
             id, room: room.to_owned(), member_id: member.id.clone(),
-            nickname: member.nickname.clone(), text: text.to_owned(), created_at,
+            nickname: member.nickname.clone(), text: text.to_owned(), created_at, attachment,
         })
     }
 
     pub fn direct_messages(&self, member_id: &str, peer_id: &str, after: i64) -> Result<Vec<DirectMessage>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, sender_id, nickname, text, created_at FROM
-             (SELECT id, sender_id, nickname, text, created_at FROM direct_messages
+            "SELECT d.id, d.sender_id, d.nickname, d.text, d.created_at,
+                    a.id, a.name, a.mime, length(a.data)
+             FROM (SELECT * FROM direct_messages
               WHERE ((sender_id = ?1 AND recipient_id = ?2) OR (sender_id = ?2 AND recipient_id = ?1))
-                AND id > ?3 ORDER BY id DESC LIMIT 100) ORDER BY id ASC",
+                AND id > ?3 ORDER BY id DESC LIMIT 100) d
+             LEFT JOIN attachments a ON a.direct_message_id = d.id ORDER BY d.id ASC",
         )?;
         let rows = stmt.query_map(params![member_id, peer_id, after], |r| {
-            Ok(DirectMessage { id: r.get(0)?, member_id: r.get(1)?, nickname: r.get(2)?, text: r.get(3)?, created_at: r.get(4)? })
+            Ok(DirectMessage { id: r.get(0)?, member_id: r.get(1)?, nickname: r.get(2)?, text: r.get(3)?, created_at: r.get(4)?, attachment: attachment_from_row(r, 5)? })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -241,28 +297,33 @@ impl Db {
                SELECT CASE WHEN sender_id = ?1 THEN recipient_id ELSE sender_id END AS peer_id, MAX(id) AS message_id
                FROM direct_messages WHERE sender_id = ?1 OR recipient_id = ?1 GROUP BY peer_id
              )
-             SELECT m.id, m.nickname, d.id, d.sender_id, d.text, d.created_at
+             SELECT m.id, m.nickname, d.id, d.sender_id, d.text, d.created_at, a.name
              FROM conversations c JOIN members m ON m.id = c.peer_id JOIN direct_messages d ON d.id = c.message_id
+             LEFT JOIN attachments a ON a.direct_message_id = d.id
              ORDER BY d.id DESC LIMIT 100",
         )?;
         let rows = stmt.query_map([member_id], |r| {
+            let text: String = r.get(4)?;
+            let file_name: Option<String> = r.get(6)?;
             Ok(DirectThread {
                 peer_id: r.get(0)?, nickname: r.get(1)?, message_id: r.get(2)?,
-                member_id: r.get(3)?, text: r.get(4)?, created_at: r.get(5)?,
+                member_id: r.get(3)?, text: if text.is_empty() { file_name.map(|name| format!("Файл: {name}")).unwrap_or_default() } else { text }, created_at: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    pub fn add_direct_message(&self, sender: &Member, recipient_id: &str, text: &str) -> Result<DirectMessage> {
-        let conn = self.conn();
+    pub fn add_direct_message(&self, sender: &Member, recipient_id: &str, text: &str, file: Option<&NewAttachment>) -> Result<DirectMessage> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
         let created_at = now();
-        conn.execute(
+        tx.execute(
             "INSERT INTO direct_messages (sender_id, recipient_id, nickname, text, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![sender.id, recipient_id, sender.nickname, text, created_at],
         )?;
-        let id = conn.last_insert_rowid();
-        conn.execute(
+        let id = tx.last_insert_rowid();
+        let attachment = file.map(|a| save_attachment(&tx, None, Some(id), a)).transpose()?;
+        tx.execute(
             "DELETE FROM direct_messages WHERE
               ((sender_id = ?1 AND recipient_id = ?2) OR (sender_id = ?2 AND recipient_id = ?1))
               AND id < (SELECT id FROM direct_messages WHERE
@@ -270,7 +331,18 @@ impl Db {
                 ORDER BY id DESC LIMIT 1 OFFSET 999)",
             params![sender.id, recipient_id],
         )?;
-        Ok(DirectMessage { id, member_id: sender.id.clone(), nickname: sender.nickname.clone(), text: text.to_owned(), created_at })
+        tx.commit()?;
+        Ok(DirectMessage { id, member_id: sender.id.clone(), nickname: sender.nickname.clone(), text: text.to_owned(), created_at, attachment })
+    }
+
+    pub fn attachment(&self, id: &str, viewer_id: &str) -> Result<Option<StoredAttachment>> {
+        Ok(self.conn().query_row(
+            "SELECT a.name, a.mime, a.data FROM attachments a
+             LEFT JOIN direct_messages d ON d.id = a.direct_message_id
+             WHERE a.id = ?1 AND (a.chat_message_id IS NOT NULL OR d.sender_id = ?2 OR d.recipient_id = ?2)",
+            params![id, viewer_id],
+            |r| Ok(StoredAttachment { name: r.get(0)?, mime: r.get(1)?, data: r.get(2)? }),
+        ).optional()?)
     }
 
     /// Name set in the app; the install-time name applies until then.
@@ -554,10 +626,10 @@ mod tests {
         let db = db();
         db.ensure_owner_invite("code", 0).unwrap();
         let Redeem::Ok(member) = db.redeem_invite("code", "izzy", "secret", 1).unwrap() else { panic!() };
-        let first = db.add_chat_message("r1", &member, "hello").unwrap();
-        db.add_chat_message("r2", &member, "elsewhere").unwrap();
-        db.add_chat_message("server", &member, "everyone").unwrap();
-        let second = db.add_chat_message("r1", &member, "again").unwrap();
+        let first = db.add_chat_message("r1", &member, "hello", None).unwrap();
+        db.add_chat_message("r2", &member, "elsewhere", None).unwrap();
+        db.add_chat_message("server", &member, "everyone", None).unwrap();
+        let second = db.add_chat_message("r1", &member, "again", None).unwrap();
         assert_eq!(db.chat_messages("r1", 0).unwrap().iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["hello", "again"]);
         assert_eq!(db.chat_messages("r1", first.id).unwrap()[0].id, second.id);
         assert_eq!(db.chat_messages("r2", 0).unwrap()[0].text, "elsewhere");
@@ -575,14 +647,44 @@ mod tests {
         db.create_invite("cara", &alice.id, 1, None).unwrap();
         let Redeem::Ok(bob) = db.redeem_invite("bob", "Bob", "s2", 2).unwrap() else { panic!() };
         let Redeem::Ok(cara) = db.redeem_invite("cara", "Cara", "s3", 3).unwrap() else { panic!() };
-        let first = db.add_direct_message(&alice, &bob.id, "hi").unwrap();
-        db.add_direct_message(&bob, &alice.id, "hello").unwrap();
-        db.add_direct_message(&alice, &cara.id, "private").unwrap();
+        let first = db.add_direct_message(&alice, &bob.id, "hi", None).unwrap();
+        db.add_direct_message(&bob, &alice.id, "hello", None).unwrap();
+        db.add_direct_message(&alice, &cara.id, "private", None).unwrap();
         assert_eq!(db.direct_messages(&alice.id, &bob.id, 0).unwrap().iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["hi", "hello"]);
         assert_eq!(db.direct_messages(&bob.id, &alice.id, first.id).unwrap()[0].text, "hello");
         assert_eq!(db.direct_messages(&bob.id, &cara.id, 0).unwrap().len(), 0);
         assert_eq!(db.direct_threads(&bob.id).unwrap().iter().map(|t| t.peer_id.as_str()).collect::<Vec<_>>(), [alice.id.as_str()]);
         db.delete_member(&alice.id).unwrap();
         assert!(db.direct_messages(&bob.id, &alice.id, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn attachments_follow_message_access_and_deletion() {
+        let db = db();
+        db.ensure_owner_invite("owner", 0).unwrap();
+        let Redeem::Ok(alice) = db.redeem_invite("owner", "Alice", "s1", 1).unwrap() else { panic!() };
+        db.create_invite("bob", &alice.id, 1, None).unwrap();
+        db.create_invite("cara", &alice.id, 1, None).unwrap();
+        let Redeem::Ok(bob) = db.redeem_invite("bob", "Bob", "s2", 2).unwrap() else { panic!() };
+        let Redeem::Ok(cara) = db.redeem_invite("cara", "Cara", "s3", 3).unwrap() else { panic!() };
+        let file = NewAttachment { name: "example.pdf".into(), mime: "application/octet-stream".into(), data: b"file bytes".to_vec() };
+
+        let public = db.add_chat_message("server", &alice, "", Some(&file)).unwrap();
+        let public_id = public.attachment.unwrap().id;
+        assert_eq!(db.chat_messages("server", 0).unwrap()[0].attachment.as_ref().unwrap().name, "example.pdf");
+        assert_eq!(db.attachment(&public_id, &cara.id).unwrap().unwrap().data, b"file bytes");
+
+        let private = db.add_direct_message(&alice, &bob.id, "", Some(&file)).unwrap();
+        let private_id = private.attachment.unwrap().id;
+        assert_eq!(db.direct_messages(&bob.id, &alice.id, 0).unwrap()[0].attachment.as_ref().unwrap().size, 10);
+        assert!(db.attachment(&private_id, &alice.id).unwrap().is_some());
+        assert!(db.attachment(&private_id, &bob.id).unwrap().is_some());
+        assert!(db.attachment(&private_id, &cara.id).unwrap().is_none());
+        assert_eq!(db.direct_threads(&bob.id).unwrap()[0].text, "Файл: example.pdf");
+
+        db.delete_member(&alice.id).unwrap();
+        assert!(db.attachment(&private_id, &bob.id).unwrap().is_none());
+        db.wipe().unwrap();
+        assert!(db.attachment(&public_id, &cara.id).unwrap().is_none());
     }
 }

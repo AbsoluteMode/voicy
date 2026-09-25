@@ -35,6 +35,14 @@ export interface ChatMessage {
   nickname: string;
   text: string;
   created_at: number;
+  attachment?: ChatAttachment | null;
+}
+
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
 }
 
 export interface DirectThread {
