@@ -66,7 +66,8 @@ export interface ScreenShare {
   identity: string;
   name: string;
   isLocal: boolean;
-  track: LocalVideoTrack | RemoteVideoTrack;
+  watching: boolean;
+  track?: LocalVideoTrack | RemoteVideoTrack;
 }
 
 export interface VoiceSnapshot {
@@ -208,6 +209,7 @@ class VoiceSession {
   private micWanted = true;
   private micPublishing: Promise<void> | null = null;
   private micUpdate: Promise<void> = Promise.resolve();
+  private watchedScreens = new Set<string>();
 
   subscribe = (fn: () => void) => {
     this.listeners.add(fn);
@@ -240,13 +242,17 @@ class VoiceSession {
     peers.sort((a, b) => Number(b.isLocal) - Number(a.isLocal) || a.name.localeCompare(b.name));
     const screens: ScreenShare[] = [];
     for (const p of all) {
-      const track = p.getTrackPublication(Track.Source.ScreenShare)?.track;
-      if (track && track.kind === Track.Kind.Video) {
+      const publication = p.getTrackPublication(Track.Source.ScreenShare);
+      if (publication && !publication.isMuted) {
+        const watching = p === room.localParticipant || this.watchedScreens.has(p.identity);
+        const track = watching && publication.track?.kind === Track.Kind.Video
+          ? publication.track as LocalVideoTrack | RemoteVideoTrack : undefined;
         screens.push({
           identity: p.identity,
           name: p.name || p.identity,
           isLocal: p === room.localParticipant,
-          track: track as LocalVideoTrack | RemoteVideoTrack,
+          watching,
+          track,
         });
       }
     }
@@ -339,8 +345,15 @@ class VoiceSession {
         .on(RoomEvent.TrackUnmuted, this.refresh)
         .on(RoomEvent.LocalTrackPublished, this.refresh)
         .on(RoomEvent.LocalTrackUnpublished, this.refresh)
-        .on(RoomEvent.TrackPublished, this.refresh)
-        .on(RoomEvent.TrackUnpublished, this.refresh)
+        .on(RoomEvent.TrackPublished, (pub, p) => {
+          if (p && (pub.source === Track.Source.ScreenShare || pub.source === Track.Source.ScreenShareAudio)
+            && !this.watchedScreens.has(p.identity)) pub.setSubscribed(false);
+          this.refresh();
+        })
+        .on(RoomEvent.TrackUnpublished, (pub, p) => {
+          if (pub.source === Track.Source.ScreenShare && p) this.watchedScreens.delete(p.identity);
+          this.refresh();
+        })
         .on(RoomEvent.ParticipantNameChanged, this.refresh)
         .on(RoomEvent.ParticipantMetadataChanged, this.refresh)
         .on(RoomEvent.AudioPlaybackStatusChanged, this.refresh)
@@ -406,6 +419,11 @@ class VoiceSession {
       // Superseded attempts already had their room closed by teardown().
       await room.connect(url, token, { autoSubscribe: true });
       if (stale()) return;
+      for (const p of room.remoteParticipants.values()) {
+        for (const source of [Track.Source.ScreenShare, Track.Source.ScreenShareAudio]) {
+          p.getTrackPublication(source)?.setSubscribed(false);
+        }
+      }
       log("connected");
       cue("join", this.ctx);
       this.set({ state: "connected" });
@@ -757,6 +775,7 @@ class VoiceSession {
     clearInterval(this.statsTimer);
     const room = this.room;
     this.room = null;
+    this.watchedScreens.clear();
     this.micPublishing = null;
     this.micUpdate = Promise.resolve();
     room?.removeAllListeners();
@@ -797,6 +816,19 @@ class VoiceSession {
       if (this.room === room) throw e;
     }
     if (this.room === room) this.refresh();
+  }
+
+  /** Subscribe to a participant's shared video and sound only while viewing it. */
+  watchScreen(identity: string, watching: boolean) {
+    const participant = this.room?.remoteParticipants.get(identity);
+    if (!participant) return;
+    if (watching && !participant.getTrackPublication(Track.Source.ScreenShare)) return;
+    if (watching) this.watchedScreens.add(identity);
+    else this.watchedScreens.delete(identity);
+    for (const source of [Track.Source.ScreenShare, Track.Source.ScreenShareAudio]) {
+      participant.getTrackPublication(source)?.setSubscribed(watching);
+    }
+    this.refresh();
   }
 
   async setMicMuted(muted: boolean, why = "?") {

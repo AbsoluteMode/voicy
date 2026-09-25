@@ -36,7 +36,9 @@ On Windows, start Docker Desktop and choose **Add server → On this PC** in Voi
 
 ## Room chat
 
-Click the speech bubble next to a room to open its text chat. Members can send messages without joining voice. Messages are stored by the Voicy server in its SQLite database; remote servers need this server version for chat to work. Enter sends a message, and Shift+Enter adds a line break.
+The server-wide chat stays visible beside the room list. The speech bubble next to a room still opens that room's separate chat. Members can send messages without joining voice. Messages are stored by the Voicy server in its SQLite database; remote servers need this server version for chat to work. Enter sends a message, and Shift+Enter adds a line break.
+
+Shared screens in your voice room appear as cards. Choose **Watch** to subscribe to a screen and its audio, then **Leave viewing** to unsubscribe without leaving the voice room.
 
 ## Layout
 

@@ -5,8 +5,9 @@ import { api, ChatMessage, errorText } from "../lib/tauri";
 import { Modal } from "./ui";
 
 export function ChannelChat({ host, room, roomName, memberId, onClose }: {
-  host: string; room: string; roomName: string; memberId: string; onClose: () => void;
+  host: string; room?: string; roomName?: string; memberId: string; onClose?: () => void;
 }) {
+  const path = room ? `/api/rooms/${room}/messages` : "/api/messages";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
@@ -18,7 +19,7 @@ export function ChannelChat({ host, room, roomName, memberId, onClose }: {
     let active = true;
     async function load() {
       try {
-        const incoming = await api<ChatMessage[]>(host, "GET", `/api/rooms/${room}/messages?after=${latest.current}`);
+        const incoming = await api<ChatMessage[]>(host, "GET", `${path}?after=${latest.current}`);
         if (!active || incoming.length === 0) return;
         latest.current = Math.max(latest.current, incoming[incoming.length - 1].id);
         setMessages((current) => {
@@ -27,13 +28,16 @@ export function ChannelChat({ host, room, roomName, memberId, onClose }: {
         });
         setError("");
       } catch (e) {
-        if (active) setError(errorText(e));
+        if (active) {
+          const detail = errorText(e);
+          setError(!room && detail.includes("404") ? "Общий чат заработает после обновления сервера Voicy." : detail);
+        }
       }
     }
     void load();
     const timer = window.setInterval(() => void load(), 2000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [host, room]);
+  }, [host, path]);
 
   useEffect(() => {
     const element = list.current;
@@ -46,7 +50,7 @@ export function ChannelChat({ host, room, roomName, memberId, onClose }: {
     if (!text || sending) return;
     setSending(true);
     try {
-      const message = await api<ChatMessage>(host, "POST", `/api/rooms/${room}/messages`, { text });
+      const message = await api<ChatMessage>(host, "POST", path, { text });
       setMessages((current) => current.some((item) => item.id === message.id) ? current : [...current, message].slice(-100));
       setDraft("");
       setError("");
@@ -64,9 +68,9 @@ export function ChannelChat({ host, room, roomName, memberId, onClose }: {
     }
   }
 
-  return (
-    <Modal title={`Чат · ${roomName}`} icon={<MessageCircle size={20} />} onClose={onClose} wide>
-      <div className="chat-list" ref={list} role="log" aria-label={`Сообщения ${roomName}`}>
+  const content = (
+    <>
+      <div className="chat-list" ref={list} role="log" aria-label={roomName ? `Сообщения ${roomName}` : "Сообщения общего чата"}>
         {messages.length === 0 && !error && <div className="chat-empty">Пока сообщений нет. Напиши первым.</div>}
         {messages.map((message) => (
           <div className={`chat-message${message.member_id === memberId ? " mine" : ""}`} key={message.id}>
@@ -95,6 +99,14 @@ export function ChannelChat({ host, room, roomName, memberId, onClose }: {
           <Send size={18} />
         </button>
       </form>
-    </Modal>
+    </>
+  );
+
+  if (room) return <Modal title={`Чат · ${roomName}`} icon={<MessageCircle size={20} />} onClose={onClose} wide>{content}</Modal>;
+  return (
+    <aside className="server-chat" aria-label="Общий чат сервера">
+      <div className="server-chat-head"><MessageCircle size={18} /><strong>Общий чат</strong></div>
+      {content}
+    </aside>
   );
 }

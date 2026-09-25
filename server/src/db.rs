@@ -473,10 +473,12 @@ mod tests {
         let Redeem::Ok(member) = db.redeem_invite("code", "izzy", "secret", 1).unwrap() else { panic!() };
         let first = db.add_chat_message("r1", &member, "hello").unwrap();
         db.add_chat_message("r2", &member, "elsewhere").unwrap();
+        db.add_chat_message("server", &member, "everyone").unwrap();
         let second = db.add_chat_message("r1", &member, "again").unwrap();
         assert_eq!(db.chat_messages("r1", 0).unwrap().iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["hello", "again"]);
         assert_eq!(db.chat_messages("r1", first.id).unwrap()[0].id, second.id);
         assert_eq!(db.chat_messages("r2", 0).unwrap()[0].text, "elsewhere");
+        assert_eq!(db.chat_messages("server", 0).unwrap()[0].text, "everyone");
         db.wipe().unwrap();
         assert!(db.chat_messages("r1", 0).unwrap().is_empty());
     }

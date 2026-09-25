@@ -33,6 +33,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/avatars/{id}", get(avatar))
         .route("/api/token", post(token))
         .route("/api/rooms", get(rooms))
+        .route("/api/messages", get(server_chat_messages).post(send_server_chat_message))
         .route("/api/rooms/{room}/messages", get(chat_messages).post(send_chat_message))
         .route("/api/members", get(members))
         .route("/api/members/{id}/kick", post(kick))
@@ -218,6 +219,14 @@ struct ChatQuery {
     after: Option<i64>,
 }
 
+async fn server_chat_messages(
+    State(s): State<SharedState>,
+    AuthMember(_m): AuthMember,
+    Query(query): Query<ChatQuery>,
+) -> ApiResult<Json<Vec<crate::db::ChatMessage>>> {
+    Ok(Json(s.db.chat_messages("server", query.after.unwrap_or(0).max(0))?))
+}
+
 async fn chat_messages(
     State(s): State<SharedState>,
     AuthMember(_m): AuthMember,
@@ -235,6 +244,22 @@ struct ChatReq {
     text: String,
 }
 
+async fn send_server_chat_message(
+    State(s): State<SharedState>,
+    AuthMember(m): AuthMember,
+    Json(req): Json<ChatReq>,
+) -> ApiResult<Json<crate::db::ChatMessage>> {
+    Ok(Json(s.db.add_chat_message("server", &m, clean_chat_text(&req.text)?)?))
+}
+
+fn clean_chat_text(raw: &str) -> ApiResult<&str> {
+    let text = raw.trim();
+    if text.is_empty() || text.chars().count() > 2000 || text.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+        return Err(ApiError::BadRequest("message must be 1-2000 printable characters"));
+    }
+    Ok(text)
+}
+
 async fn send_chat_message(
     State(s): State<SharedState>,
     AuthMember(m): AuthMember,
@@ -244,11 +269,7 @@ async fn send_chat_message(
     if parse_room(&room).is_none() {
         return Err(ApiError::BadRequest("unknown room"));
     }
-    let text = req.text.trim();
-    if text.is_empty() || text.chars().count() > 2000 || text.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
-        return Err(ApiError::BadRequest("message must be 1-2000 printable characters"));
-    }
-    Ok(Json(s.db.add_chat_message(&room, &m, text)?))
+    Ok(Json(s.db.add_chat_message(&room, &m, clean_chat_text(&req.text)?)?))
 }
 
 /// Runs `f` for every live room (kicks, role updates, deletion).

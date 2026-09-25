@@ -1,4 +1,4 @@
-import { ImagePlus, LogOut, Maximize2, MessageCircle, Pencil, Search, Shield, ShieldOff, Trash2, Upload, UserMinus } from "lucide-react";
+import { ImagePlus, LogOut, Maximize2, MessageCircle, MonitorPlay, Pencil, Search, Shield, ShieldOff, Trash2, Upload, UserMinus, X } from "lucide-react";
 import { FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
 
 import { syncAvatar } from "../lib/avatar";
@@ -83,20 +83,23 @@ function Level({ identity }: { identity: string }) {
   );
 }
 
-function ScreenTile({ screen }: { screen: ScreenShare }) {
+function ScreenTile({ screen, track, onLeave }: { screen: ScreenShare; track: NonNullable<ScreenShare["track"]>; onLeave: () => void }) {
   const video = useRef<HTMLVideoElement>(null);
   useEffect(() => {
     const element = video.current;
     if (!element) return;
-    screen.track.attach(element);
-    return () => void screen.track.detach(element);
-  }, [screen.track]);
+    track.attach(element);
+    return () => void track.detach(element);
+  }, [track]);
   const fullscreen = () => void video.current?.requestFullscreen();
   return (
     <div className="screen-tile">
       <video ref={video} autoPlay playsInline muted onDoubleClick={fullscreen} />
       <div className="screen-bar">
         <span className="screen-who">{screen.name}{screen.isLocal && " · ты"}</span>
+        <button className="screen-leave" onClick={onLeave} title={screen.isLocal ? "Остановить демонстрацию" : "Выйти из просмотра"}>
+          <X size={14} /> {screen.isLocal ? "Остановить" : "Выйти из просмотра"}
+        </button>
         <button className="icon-btn sm" title="На весь экран (двойной клик)" aria-label="На весь экран" onClick={fullscreen}>
           <Maximize2 size={14} />
         </button>
@@ -503,6 +506,7 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
         </div>
       </header>
 
+      <div className="server-content">
       <section className="list">
         {here && v.endReason && !connected && <div className="notice">{END_TEXT[v.endReason]}</div>}
         {error && <div className="error">{error}</div>}
@@ -512,8 +516,17 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
           </div>
         )}
         {connected && v.screens.length > 0 && (
-          <div className="screens">
-            {v.screens.map((s) => <ScreenTile key={s.identity} screen={s} />)}
+          <div className="screens-block">
+            <div className="sec-label">Демонстрации в комнате</div>
+            <div className="screens">
+              {v.screens.map((s) => s.watching && s.track
+                ? <ScreenTile key={s.identity} screen={s} track={s.track} onLeave={() => s.isLocal ? void toggleShare() : voice.watchScreen(s.identity, false)} />
+                : s.watching
+                  ? <div key={s.identity} className="screen-pending"><MonitorPlay size={20} /> Подключаю демонстрацию {s.name}… <button className="linklike" onClick={() => voice.watchScreen(s.identity, false)}>Отмена</button></div>
+                  : <button key={s.identity} className="screen-join" onClick={() => voice.watchScreen(s.identity, true)}>
+                      <MonitorPlay size={21} /><span><strong>{s.name} показывает экран</strong><small>Нажми, чтобы смотреть со звуком</small></span><span>Смотреть</span>
+                    </button>)}
+            </div>
           </div>
         )}
 
@@ -594,6 +607,8 @@ export function ServerView({ server, onChanged, onRemoved }: { server: SavedServ
           </>
         )}
       </section>
+      <ChannelChat host={server.host} memberId={server.member_id} />
+      </div>
 
       <footer className="dock-wrap">
         <div className="dock">
