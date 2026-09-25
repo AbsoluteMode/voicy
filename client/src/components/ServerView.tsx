@@ -9,7 +9,8 @@ import { api, avatarUrl, errorCode, errorText, forgetServer, Member, Role, RoomI
 import { EndReason, Peer, ScreenShare, useVoice, voice } from "../lib/voice";
 import { AvatarDialog, removeAvatar } from "./AvatarDialog";
 import { ChannelChat } from "./ChannelChat";
-import { DirectMessagesPanel, DirectPeer, ServerChatPanel } from "./ServerChatPanel";
+import { DirectPeer } from "./DirectMessagesPage";
+import { ServerChatPanel } from "./ServerChatPanel";
 import { DeleteDialog } from "./DeleteDialog";
 import {
   HangUpIcon,
@@ -266,7 +267,7 @@ function PeerRow(props: {
   );
 }
 
-export function ServerView({ server, inboxRequest, onChanged, onRemoved }: { server: SavedServer; inboxRequest: number; onChanged: () => void; onRemoved: () => void }) {
+export function ServerView({ server, onDirectMessage, onChanged, onRemoved }: { server: SavedServer; onDirectMessage: (peer: DirectPeer) => void; onChanged: () => void; onRemoved: () => void }) {
   const v = useVoice();
   const here = v.host === server.host;
   const connected = here && v.state !== "idle";
@@ -285,25 +286,15 @@ export function ServerView({ server, inboxRequest, onChanged, onRemoved }: { ser
   const [chatRoom, setChatRoom] = useState<{ id: string; name: string } | null>(null);
   const [memberMenu, setMemberMenu] = useState<(DirectPeer & { anchor: HTMLElement }) | null>(null);
   const closeMemberMenu = useCallback(() => setMemberMenu(null), []);
-  const [directPeer, setDirectPeer] = useState<DirectPeer | null>(null);
-  const [chatView, setChatView] = useState<"server" | "inbox">("server");
   const [chatOpen, setChatOpen] = useState(() => localStorage.getItem("voicy.chat.open") !== "false");
   const [chatWidth, setChatWidth] = useState(() => {
     const stored = Number(localStorage.getItem("voicy.chat.width.v2"));
     return Number.isFinite(stored) && stored >= 240 && stored <= 700 ? stored : 400;
   });
   const contentRef = useRef<HTMLDivElement>(null);
-  const lastInboxRequest = useRef(inboxRequest);
 
   useEffect(() => { localStorage.setItem("voicy.chat.open", String(chatOpen)); }, [chatOpen]);
   useEffect(() => { localStorage.setItem("voicy.chat.width.v2", String(chatWidth)); }, [chatWidth]);
-  useEffect(() => {
-    if (inboxRequest === lastInboxRequest.current) return;
-    lastInboxRequest.current = inboxRequest;
-    setDirectPeer(null);
-    setChatView("inbox");
-    setChatOpen(true);
-  }, [inboxRequest]);
 
   function resizeChat(event: ReactPointerEvent<HTMLDivElement>) {
     const rect = contentRef.current?.getBoundingClientRect();
@@ -312,10 +303,8 @@ export function ServerView({ server, inboxRequest, onChanged, onRemoved }: { ser
   }
 
   function openDirect(id: string, nickname: string) {
-    setDirectPeer({ id, nickname });
     setMemberMenu(null);
-    setChatView("inbox");
-    setChatOpen(true);
+    onDirectMessage({ id, nickname });
   }
 
   function toggleMemberMenu(id: string, nickname: string, anchor: HTMLElement) {
@@ -540,7 +529,7 @@ export function ServerView({ server, inboxRequest, onChanged, onRemoved }: { ser
     <div className="server">
       <header className="server-head">
         <h1>{name}</h1>
-        <button className={`btn pill chat-toggle${chatOpen && chatView === "server" ? " active" : ""}`} onClick={() => { if (chatOpen && chatView === "server") setChatOpen(false); else { setChatView("server"); setChatOpen(true); } }} aria-label={chatOpen && chatView === "server" ? "Закрыть общий чат" : "Открыть общий чат"} title={chatOpen && chatView === "server" ? "Закрыть общий чат" : "Открыть общий чат"}>
+        <button className={`btn pill chat-toggle${chatOpen ? " active" : ""}`} onClick={() => setChatOpen((open) => !open)} aria-label={chatOpen ? "Закрыть общий чат" : "Открыть общий чат"} title={chatOpen ? "Закрыть общий чат" : "Открыть общий чат"}>
           <MessageCircle size={16} /> Чат
         </button>
         {RANK[role] >= RANK.admin && (
@@ -682,9 +671,7 @@ export function ServerView({ server, inboxRequest, onChanged, onRemoved }: { ser
           onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); }}
           onPointerMove={(e) => { if (e.currentTarget.hasPointerCapture(e.pointerId)) resizeChat(e); }}
           onKeyDown={(e) => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); setChatWidth((width) => Math.max(240, Math.min(700, width + (e.key === "ArrowLeft" ? 20 : -20)))); } }} />
-        {chatView === "server"
-          ? <ServerChatPanel host={server.host} memberId={server.member_id} onClose={() => setChatOpen(false)} />
-          : <DirectMessagesPanel host={server.host} memberId={server.member_id} members={members} peer={directPeer} onPeer={setDirectPeer} onClose={() => setChatOpen(false)} />}
+        <ServerChatPanel host={server.host} memberId={server.member_id} onClose={() => setChatOpen(false)} />
       </>}
       </div>
 

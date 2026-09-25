@@ -3,6 +3,7 @@ import { AlertCircle, Check, ChevronRight, Laptop, Link2, Plus, RefreshCw, Send,
 import { MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { CreateDialog } from "./components/CreateDialog";
+import { DirectMessagesPage, DirectPeer } from "./components/DirectMessagesPage";
 import { JoinDialog } from "./components/JoinDialog";
 import { DownloadIcon, Logo, PlusIcon } from "./components/icons";
 import { LocalCreateDialog } from "./components/LocalCreateDialog";
@@ -68,7 +69,8 @@ export default function App() {
   const [servers, setServers] = useState<SavedServer[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
-  const [inboxRequest, setInboxRequest] = useState(0);
+  const [page, setPage] = useState<"server" | "inbox">("server");
+  const [inboxPeer, setInboxPeer] = useState<DirectPeer | null>(null);
   const v = useVoice();
 
   const reload = useCallback(async () => {
@@ -88,6 +90,8 @@ export default function App() {
       setDialog(null);
       void reload().then(() => {
         setSelected(s.host);
+        setPage("server");
+        setInboxPeer(null);
         if (!connect || voice.getSnapshot().state !== "idle") return;
         // A friend who just joined wants to be where people already are.
         void api<RoomInfo[]>(s.host, "GET", "/api/rooms")
@@ -170,14 +174,13 @@ export default function App() {
   return (
     <div className="app">
       <nav className="rail" aria-label="Серверы">
-        <div className="rail-logo" title="Voicy"><Logo size={30} /></div>
-        {current && <button className="rail-btn inbox" title="Личные сообщения" aria-label="Личные сообщения" onClick={() => setInboxRequest((count) => count + 1)}><Send size={19} /></button>}
+        <button className={`rail-btn inbox${page === "inbox" ? " active" : ""}`} title="Личные сообщения" aria-label="Личные сообщения" onClick={() => { setInboxPeer(null); setPage("inbox"); }}><Send size={22} /></button>
         {servers.map((s) => (
           <button
             key={s.host}
-            className={`rail-btn${s.host === selected ? " active" : ""}`}
+            className={`rail-btn${s.host === selected && page === "server" ? " active" : ""}`}
             title={s.name}
-            onClick={() => setSelected(s.host)}
+            onClick={() => { setSelected(s.host); setInboxPeer(null); setPage("server"); }}
           >
             {initials(s.name)}
             {v.host === s.host && v.state !== "idle" && <span className="live" />}
@@ -224,8 +227,10 @@ export default function App() {
       </nav>
 
       <main className="main" {...spot}>
-        {current ? (
-          <ServerView key={current.host} server={current} inboxRequest={inboxRequest} onChanged={reload} onRemoved={reload} />
+        {page === "inbox" ? (
+          <DirectMessagesPage key={current?.host ?? "empty"} server={current} peer={inboxPeer} onPeer={setInboxPeer} onReturn={() => setPage("server")} />
+        ) : current ? (
+          <ServerView key={current.host} server={current} onDirectMessage={(peer) => { setInboxPeer(peer); setPage("inbox"); }} onChanged={reload} onRemoved={reload} />
         ) : (
           <Welcome onInvite={(link) => setDialog({ kind: "join", link })} onCreate={() => setDialog({ kind: "create" })} onLocal={() => setDialog({ kind: "local" })} />
         )}
