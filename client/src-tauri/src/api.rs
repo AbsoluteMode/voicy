@@ -36,7 +36,14 @@ pub async fn request(host: &str, token: Option<&str>, method: Method, path: &str
     if !path.starts_with("/api/") || path.contains("..") {
         return Err(CmdError::new("invalid", "bad api path"));
     }
-    let mut req = client().request(method, format!("https://{host}{path}"));
+    // Plain HTTP is allowed only for the built-in server bound to this PC.
+    let scheme = if host == "127.0.0.1:8080" { "http" } else { "https" };
+    let mut req = client().request(method, format!("{scheme}://{host}{path}"));
+    if body.as_ref().and_then(|value| value.get("attachment")).is_some_and(|file| !file.is_null())
+        || path.starts_with("/api/attachments/")
+    {
+        req = req.timeout(Duration::from_secs(90));
+    }
     if let Some(token) = token {
         req = req.bearer_auth(token);
     }

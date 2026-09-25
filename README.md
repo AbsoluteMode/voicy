@@ -45,6 +45,18 @@ gives sound only for a whole screen). The stream goes out at 1080p30 with 720p a
 viewer gets what fits their connection and the size of the stream on their screen, and unwatched layers are not
 encoded. Shared sound is stereo and leaves out everything voicy itself plays, so nobody hears the room echoed back.
 
+## Local server for testing
+
+On Windows, start Docker Desktop and choose **Add server → On this PC** in Voicy. The app starts a loopback-only LiveKit container and the bundled `voicy-server.exe`, then creates the owner account. This local server is reachable only from the same computer. Its data is kept in the app config directory and is reused on the next launch; joining a room starts the local services again when needed. The client installer builds and bundles the matching server executable.
+
+## Room chat
+
+The server-wide chat sits beside the room list. Its header button opens or closes the panel, and the divider can be dragged to resize it. This panel shows only the server chat. The paper-plane button at the top of the left rail opens a separate **Direct messages** page with a contact list and conversations; clicking a member shows a **Write a direct message** action that opens their conversation on that page. The speech bubble next to a room still opens that room's separate chat. Only the two participants can read a private conversation. Members can send messages without joining voice. Messages are stored by the Voicy server in its SQLite database; remote servers need this server version for chat to work. Enter sends a message, and Shift+Enter adds a line break.
+
+The server chat, room chats, and direct messages accept one image or other file per message (up to 10 MB), with optional text. PNG, JPEG, WebP, and GIF images appear inline; other files can be downloaded from the message. Direct-message attachments are available only to the two participants. Both client and server must be updated to use attachments.
+
+Shared screens in your voice room appear as cards. Choose **Watch** to subscribe to a screen and its audio, then **Leave viewing** to unsubscribe without leaving the voice room.
+
 ## Layout
 
 ```

@@ -4,9 +4,9 @@
   "version": "0.1.26",
   "identifier": "com.voicy.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "node scripts/stage-local-server.mjs && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "node scripts/stage-local-server.mjs && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "Voicy",
-        "width": 440,
-        "height": 600,
+        "width": 960,
+        "height": 680,
         "minWidth": 360,
         "minHeight": 460
       }
@@ -42,6 +42,7 @@
     "active": true,
     "targets": ["nsis"],
     "createUpdaterArtifacts": true,
+    "resources": ["resources/voicy-server.exe"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

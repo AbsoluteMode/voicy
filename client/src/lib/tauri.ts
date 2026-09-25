@@ -28,6 +28,32 @@ export interface RoomInfo {
   participants: { id: string; name: string }[];
 }
 
+export interface ChatMessage {
+  id: number;
+  room?: string;
+  member_id: string;
+  nickname: string;
+  text: string;
+  created_at: number;
+  attachment?: ChatAttachment | null;
+}
+
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+}
+
+export interface DirectThread {
+  peer_id: string;
+  nickname: string;
+  message_id: number;
+  member_id: string;
+  text: string;
+  created_at: number;
+}
+
 export interface Invite {
   id: string;
   created_by: string | null;
@@ -104,13 +130,17 @@ export function deployServer(
   return invoke<SavedServer>("deploy_server", { req, onLog: logChannel(onLog) });
 }
 
+export function createLocalServer(serverName: string, nickname: string, onLog: (line: string) => void) {
+  return invoke<SavedServer>("create_local_server", { serverName, nickname, onLog: logChannel(onLog) });
+}
+
 export function uninstallServer(ssh: SshCreds, onLog: (line: string) => void) {
   return invoke<void>("uninstall_server", { ssh, onLog: logChannel(onLog) });
 }
 
 /** Members' pictures are public by id, so a plain `<img>` can show them. */
 export const avatarUrl = (host: string, memberId: string, version: string) =>
-  `https://${host}/api/avatars/${encodeURIComponent(memberId)}?v=${encodeURIComponent(version)}`;
+  `${host === "127.0.0.1:8080" ? "http" : "https"}://${host}/api/avatars/${encodeURIComponent(memberId)}?v=${encodeURIComponent(version)}`;
 
 export interface Pin {
   id: string;

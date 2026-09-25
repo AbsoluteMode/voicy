@@ -11,6 +11,7 @@ build/
 dist/
 out/
 target/
+client/src-tauri/resources/voicy-server.exe
 
 # IDE / OS
 .vs/

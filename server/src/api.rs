@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use axum::{
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use crate::{
     auth::{hash, random_secret, AuthMember},
     avatar, diag,
-    db::{now, Invite, Member, Redeem, Role},
+    db::{now, Invite, Member, NewAttachment, Redeem, Role},
     error::{ApiError, ApiResult},
     livekit::ECHO_SUFFIX,
     rooms::{layout, parse_room, room_id, RoomPeer, RoomView},
@@ -23,6 +23,7 @@ use crate::{
 
 const DEFAULT_INVITE_HOURS: u32 = 72;
 const MAX_INVITE_HOURS: u32 = 24 * 30;
+const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 
 pub fn router(state: SharedState) -> Router {
     Router::new()
@@ -33,6 +34,12 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/avatars/{id}", get(avatar))
         .route("/api/token", post(token))
         .route("/api/rooms", get(rooms))
+        .route("/api/messages", get(server_chat_messages).post(send_server_chat_message))
+        .route("/api/dms", get(direct_threads))
+        .route("/api/dms/{peer}", get(direct_messages).post(send_direct_message))
+        .route("/api/rooms/{room}/messages", get(chat_messages).post(send_chat_message))
+        .route("/api/attachments/support", get(attachment_support))
+        .route("/api/attachments/{id}", get(attachment))
         .route("/api/members", get(members))
         .route("/api/ping", post(ping))
         .route("/api/members/{id}/kick", post(kick))
@@ -44,6 +51,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/rtc-auth", get(rtc_auth))
         .route("/api/logs", post(client_logs))
         .route("/join/{code}", get(crate::invite_page::page))
+        .layer(DefaultBodyLimit::max(15 * 1024 * 1024))
         .with_state(state)
 }
 
@@ -214,6 +222,137 @@ async fn live_rooms(s: &SharedState) -> anyhow::Result<BTreeMap<u32, Vec<RoomPee
 
 async fn rooms(State(s): State<SharedState>, _auth: AuthMember) -> ApiResult<Json<Vec<RoomView>>> {
     Ok(Json(layout(live_rooms(&s).await?)))
+}
+
+#[derive(Deserialize, Default)]
+struct ChatQuery {
+    after: Option<i64>,
+}
+
+async fn server_chat_messages(
+    State(s): State<SharedState>,
+    AuthMember(_m): AuthMember,
+    Query(query): Query<ChatQuery>,
+) -> ApiResult<Json<Vec<crate::db::ChatMessage>>> {
+    Ok(Json(s.db.chat_messages("server", query.after.unwrap_or(0).max(0))?))
+}
+
+async fn chat_messages(
+    State(s): State<SharedState>,
+    AuthMember(_m): AuthMember,
+    Path(room): Path<String>,
+    Query(query): Query<ChatQuery>,
+) -> ApiResult<Json<Vec<crate::db::ChatMessage>>> {
+    if parse_room(&room).is_none() {
+        return Err(ApiError::BadRequest("unknown room"));
+    }
+    Ok(Json(s.db.chat_messages(&room, query.after.unwrap_or(0).max(0))?))
+}
+
+#[derive(Deserialize)]
+struct ChatReq {
+    #[serde(default)]
+    text: String,
+    attachment: Option<AttachmentReq>,
+}
+
+#[derive(Deserialize)]
+struct AttachmentReq {
+    name: String,
+    data: String,
+}
+
+fn prepare_chat(req: ChatReq) -> ApiResult<(String, Option<NewAttachment>)> {
+    let attachment = req.attachment.map(|file| {
+        if file.data.len() > (MAX_ATTACHMENT_BYTES + 2) / 3 * 4 + 4 {
+            return Err(ApiError::BadRequest("file is too large (10 MB maximum)"));
+        }
+        let data = STANDARD.decode(file.data.trim()).map_err(|_| ApiError::BadRequest("file must be base64"))?;
+        if data.is_empty() || data.len() > MAX_ATTACHMENT_BYTES {
+            return Err(ApiError::BadRequest("file must be 1 byte to 10 MB"));
+        }
+        let name = file.name.rsplit(|c| c == '/' || c == '\\').next().unwrap_or("").trim();
+        if name.is_empty() || name.chars().count() > 160 || name.chars().any(char::is_control) {
+            return Err(ApiError::BadRequest("file name must be 1-160 printable characters"));
+        }
+        let mime = avatar::sniff(&data).unwrap_or("application/octet-stream");
+        Ok(NewAttachment { name: name.to_owned(), mime: mime.to_owned(), data })
+    }).transpose()?;
+    let text = req.text.trim();
+    if (text.is_empty() && attachment.is_none()) || text.chars().count() > 2000 || text.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+        return Err(ApiError::BadRequest("message must contain text or a file, with at most 2000 printable characters"));
+    }
+    Ok((text.to_owned(), attachment))
+}
+
+async fn send_server_chat_message(
+    State(s): State<SharedState>,
+    AuthMember(m): AuthMember,
+    Json(req): Json<ChatReq>,
+) -> ApiResult<Json<crate::db::ChatMessage>> {
+    let (text, file) = prepare_chat(req)?;
+    Ok(Json(s.db.add_chat_message("server", &m, &text, file.as_ref())?))
+}
+
+async fn direct_threads(
+    State(s): State<SharedState>,
+    AuthMember(m): AuthMember,
+) -> ApiResult<Json<Vec<crate::db::DirectThread>>> {
+    Ok(Json(s.db.direct_threads(&m.id)?))
+}
+
+fn valid_direct_peer(s: &SharedState, member_id: &str, peer_id: &str) -> ApiResult<()> {
+    if peer_id == member_id || s.db.member(peer_id)?.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    Ok(())
+}
+
+async fn direct_messages(
+    State(s): State<SharedState>,
+    AuthMember(m): AuthMember,
+    Path(peer): Path<String>,
+    Query(query): Query<ChatQuery>,
+) -> ApiResult<Json<Vec<crate::db::DirectMessage>>> {
+    valid_direct_peer(&s, &m.id, &peer)?;
+    Ok(Json(s.db.direct_messages(&m.id, &peer, query.after.unwrap_or(0).max(0))?))
+}
+
+async fn send_direct_message(
+    State(s): State<SharedState>,
+    AuthMember(m): AuthMember,
+    Path(peer): Path<String>,
+    Json(req): Json<ChatReq>,
+) -> ApiResult<Json<crate::db::DirectMessage>> {
+    valid_direct_peer(&s, &m.id, &peer)?;
+    let (text, file) = prepare_chat(req)?;
+    Ok(Json(s.db.add_direct_message(&m, &peer, &text, file.as_ref())?))
+}
+
+async fn attachment(
+    State(s): State<SharedState>,
+    AuthMember(m): AuthMember,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let file = s.db.attachment(&id, &m.id)?.ok_or(ApiError::NotFound)?;
+    Ok(Json(json!({ "name": file.name, "mime": file.mime, "data": STANDARD.encode(file.data) })))
+}
+
+async fn attachment_support(AuthMember(_): AuthMember) -> Json<Value> {
+    Json(json!({ "max_bytes": MAX_ATTACHMENT_BYTES }))
+}
+
+async fn send_chat_message(
+    State(s): State<SharedState>,
+    AuthMember(m): AuthMember,
+    Path(room): Path<String>,
+    Json(req): Json<ChatReq>,
+) -> ApiResult<Json<crate::db::ChatMessage>> {
+    if parse_room(&room).is_none() {
+        return Err(ApiError::BadRequest("unknown room"));
+    }
+    let (text, file) = prepare_chat(req)?;
+    Ok(Json(s.db.add_chat_message(&room, &m, &text, file.as_ref())?))
 }
 
 /// Runs `f` for every live room (kicks, role updates, deletion).
